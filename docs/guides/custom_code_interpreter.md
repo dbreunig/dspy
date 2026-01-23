@@ -688,6 +688,54 @@ def worker(query):
         interpreter_pool.put(interp)
 ```
 
+## Non-Python Interpreters
+
+While DSPy's `PythonInterpreter` executes Python code, you can implement interpreters for other languages. The protocol is language-agnostic - your interpreter just needs to:
+
+1. Execute code in some language
+2. Support variable injection
+3. Provide tools callable from the code
+4. Support FINAL/FINAL_VAR for signaling completion
+
+### Input Variables as Files
+
+For interpreters where processing large text inputs is common (e.g., bash, shell scripts), consider storing input variables as **files** rather than as code-level variables. This approach:
+
+- Enables use of standard text processing tools (grep, awk, sed, etc.)
+- Avoids escaping issues with large text in code
+- Separates data from code
+
+Example approach:
+```
+# Store input as file: /input/context contains the text
+# Set shell variable to path: $context = "/input/context"
+# LLM can process with: grep "pattern" $context | wc -l
+```
+
+### BashInterpreter Example
+
+The [dspy-bash-interpreter](https://github.com/dspy-community/dspy-bash-interpreter) library provides a bash interpreter that implements this protocol:
+
+```python
+from dspy_bash_interpreter import BashInterpreter
+
+interpreter = BashInterpreter()
+rlm = dspy.RLM(
+    "log_content: str -> error_count: int",
+    interpreter=interpreter,
+)
+
+# log_content is stored as /input/log_content file
+# LLM can use: grep "ERROR" $log_content | wc -l
+result = rlm(log_content=log_text)
+```
+
+Key features:
+- Bash code execution via just-bash (pure Python, sandboxed)
+- Input variables stored as files in `/input/` directory
+- Shell variables point to file paths (e.g., `$context` = `/input/context`)
+- Full support for Unix tools: grep, awk, sed, head, tail, wc, etc.
+
 ## Additional Resources
 
 - [DSPy Documentation](https://dspy.ai)
@@ -695,6 +743,7 @@ def worker(query):
 - [CodeInterpreter Protocol](../dspy/primitives/code_interpreter.py)
 - [PythonInterpreter Reference Implementation](../dspy/primitives/python_interpreter.py)
 - [Interpreter Conformance Tests](../tests/interpreter_conformance.py)
+- [BashInterpreter](https://github.com/dspy-community/dspy-bash-interpreter) - Bash interpreter example
 
 ## Support
 
