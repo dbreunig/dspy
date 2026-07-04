@@ -11,6 +11,7 @@ This list represents companies that have publicly shared their use cases or have
   <a href="https://www.jetblue.com/" title="JetBlue"><img class="logo-jetblue" src="../../static/img/logos/jetblue.svg" alt="JetBlue"></a>
   <a href="https://replit.com/" title="Replit"><img class="logo-replit" src="../../static/img/logos/replit.svg" alt="Replit"></a>
   <a href="https://aws.amazon.com/" title="AWS"><img class="logo-aws" src="../../static/img/logos/aws.svg" alt="AWS"></a>
+  <a href="https://microsoft.ai/" title="Microsoft AI"><img class="logo-microsoft" src="../../static/img/logos/microsoft-ai.svg" alt="Microsoft AI"></a>
 </div>
 
 ## Featured case studies
@@ -41,6 +42,7 @@ This list represents companies that have publicly shared their use cases or have
 |---|---|
 | **[Shopify](https://www.shopify.com/)** | Structured metadata extraction across all Shopify shops with DSPy + GEPA; reduced yearly costs ~550×. [Talk](https://www.youtube.com/watch?v=bxToahwOVpY) |
 | **[Dropbox](https://www.dropbox.com/)** | Optimized Dash's relevance judge using DSPy across ranking, training data generation, and offline evaluation. [Engineering blog](https://dropbox.tech/machine-learning/optimizing-dropbox-dash-relevance-judge-with-dspy), [Talk](https://www.youtube.com/watch?v=gGGCJWbqHqc) |
+| **[Microsoft AI](https://microsoft.ai/)** | Curates pretraining data with DSPy + GEPA. Quality classification of web pages uses LLM rubric graders and human labels. The resulting labels bootstrap training data for embedding classifiers. This work is described in MAI-Thinking-1. [Paper](https://microsoft.ai/pdf/mai-thinking-1.pdf), [Blog](https://haroldbenoit.com/blog/ode_to_gepa/) |
 | **[AWS](https://aws.amazon.com/)** | Migrates prompts from larger to smaller models on Amazon Nova while maintaining performance. [Blog](https://aws.amazon.com/blogs/machine-learning/improve-amazon-nova-migration-performance-with-data-aware-prompt-optimization/) |
 | **[JetBlue](https://www.jetblue.com/)** | Multiple chatbot use cases. [Blog](https://www.databricks.com/blog/optimizing-databricks-llm-pipelines-dspy) |
 | **[Replit](https://replit.com/)** | Synthesize diffs using code LLMs using a DSPy pipeline. [Blog](https://blog.replit.com/code-repair) |

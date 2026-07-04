@@ -22,6 +22,7 @@ This is the list of tutorials and blog posts on DSPy. If you would like to add y
 | **DSPyGen: Revolutionizing AI** | [Link](https://www.linkedin.com/pulse/launch-alert-dspygen-20242252-revolutionizing-ai-sean-chatman--g9f1c/) |
 | **Building an AI Assistant with DSPy** | [Link](https://www.linkedin.com/pulse/building-ai-assistant-dspy-valliappa-lakshmanan-vgnsc/) |
 | **Building Self-improving Agents in Production with DSPy** | [Link](https://relevanceai.com/blog/building-self-improving-agentic-systems-in-production-with-dspy) |
+| **Are you still tuning your LLMs by hand? An ode to GEPA** | [Blog](https://haroldbenoit.com/blog/ode_to_gepa/) |
 
 
 ### Videos

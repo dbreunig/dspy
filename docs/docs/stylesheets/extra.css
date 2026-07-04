@@ -318,6 +318,7 @@ h2.doc-heading {
 .dspy-logo-wall img.logo-jetblue    { height: 22px; max-width: 100px; }
 .dspy-logo-wall img.logo-replit     { height: 28px; max-width: 32px; }
 .dspy-logo-wall img.logo-aws        { height: 26px; max-width: 60px; }
+.dspy-logo-wall img.logo-microsoft  { height: 20px; max-width: 150px; }
 [data-md-color-scheme="slate"] .dspy-logo-wall img {
     filter: brightness(0) invert(1);
 }
