@@ -320,6 +320,7 @@ plugins:
             "getting_started/11_saving_and_loading.md": "getting-started/saving-and-loading.md"
             "getting_started/12_where_to_go_next.md":   "getting-started/where-to-go-next.md"
     - llmstxt:
+        full_output: llms-full.txt
         markdown_description: >
           DSPy is the framework for programming—rather than prompting—language models.
           DSPy unifies techniques for prompting, fine-tuning, reasoning, tool use, and evaluation of LMs.
