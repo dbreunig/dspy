@@ -187,9 +187,14 @@ class Predict(Module, Parameter):
             if k not in kwargs and v.default is not PydanticUndefined:
                 kwargs[k] = v.default
 
-        # Check and warn for extra fields not in signature
+        # Check for extra fields not in signature
         extra_fields = [k for k in kwargs if k not in signature.input_fields]
         if extra_fields:
+            if settings.strict_types:
+                raise ValueError(
+                    f"Input contains fields not in signature: {extra_fields}. "
+                    f"Expected fields: {list(signature.input_fields.keys())}."
+                )
             logger.warning(
                 "Input contains fields not in signature. These fields will be ignored: %s. "
                 "Expected fields: %s.",
@@ -198,7 +203,7 @@ class Predict(Module, Parameter):
             )
 
         # Validate input field types match signature
-        if settings.warn_on_type_mismatch:
+        if settings.strict_types or settings.warn_on_type_mismatch:
             for field_name, field_info in signature.input_fields.items():
                 if field_name in kwargs:
                     value = kwargs[field_name]
@@ -208,6 +213,12 @@ class Predict(Module, Parameter):
                         continue
 
                     if not _is_value_compatible_with_type(value, expected_type):
+                        if settings.strict_types:
+                            raise ValueError(
+                                f"Type mismatch for field '{field_name}': expected "
+                                f"{_get_type_name(expected_type)} based on given Signature, "
+                                f"but the provided value is incompatible: {value}."
+                            )
                         logger.warning(
                             "Type mismatch for field '%s': expected %s based on given Signature, "
                             "but the provided value is incompatible: %s.",
@@ -223,6 +234,10 @@ class Predict(Module, Parameter):
         ]
         if missing:
             present = [k for k in signature.input_fields if k in kwargs]
+            if settings.strict_types:
+                raise ValueError(
+                    f"Not all input fields were provided to module. Present: {present}. Missing: {missing}."
+                )
             logger.warning(
                 "Not all input fields were provided to module. Present: %s. Missing: %s.",
                 present,
