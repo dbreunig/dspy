@@ -39,6 +39,18 @@ def _default_instructions(cls) -> str:
 
 
 class SignatureMeta(type(BaseModel)):
+    @typing.overload
+    def __call__(
+        cls,
+        signature: str | dict[str, tuple[type, FieldInfo]],
+        instructions: str | None = ...,
+        signature_name: str = ...,
+        custom_types: dict[str, type] | None = ...,
+    ) -> type["Signature"]: ...
+
+    @typing.overload
+    def __call__(cls, *args: Any, **kwargs: Any) -> Any: ...
+
     def __call__(cls, *args, **kwargs):
         if cls is Signature:
             # We don't create an actual Signature instance, instead, we create a new Signature class.

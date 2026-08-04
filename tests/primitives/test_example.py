@@ -154,3 +154,13 @@ def test_example_to_dict_with_history():
     json_str = json.dumps(result)
     restored = json.loads(json_str)
     assert restored["history"]["messages"] == result["history"]["messages"]
+
+
+def test_example_dir_includes_store_keys():
+    example = Example(question="q", answer="a")
+    assert "question" in dir(example)
+    assert "answer" in dir(example)
+
+    prediction = dspy.Prediction(question="q", answer="a")
+    assert "question" in dir(prediction)
+    assert "answer" in dir(prediction)
