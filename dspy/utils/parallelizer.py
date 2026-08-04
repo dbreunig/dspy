@@ -12,6 +12,7 @@ import tqdm
 
 from dspy.dsp.utils.settings import settings, thread_local_overrides
 from dspy.utils.callback_context import _bind_active_call_id
+from dspy.utils.exceptions import ExecutionCancelledError
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +102,10 @@ class ParallelExecutor:
 
         if self.cancel_jobs.is_set():
             logger.warning("Execution cancelled due to errors or interruption.")
-            raise Exception("Execution cancelled due to errors or interruption.")
+            raise ExecutionCancelledError(
+                exceptions_map=self.exceptions_map,
+                partial_results=[None if r is _UNSET else r for r in results],
+            )
 
         return [None if r is _UNSET else r for r in results]
 
@@ -228,7 +232,10 @@ class ParallelExecutor:
 
         if self.cancel_jobs.is_set():
             logger.warning("Execution cancelled due to errors or interruption.")
-            raise Exception("Execution cancelled due to errors or interruption.")
+            raise ExecutionCancelledError(
+                exceptions_map=self.exceptions_map,
+                partial_results=[None if r is _UNSET else r for r in results],
+            )
 
         return [None if r is _UNSET else r for r in results]
 

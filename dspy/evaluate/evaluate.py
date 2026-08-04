@@ -52,10 +52,17 @@ class EvaluationResult(Prediction):
 
     - score: An float value (e.g., 67.30) representing the overall performance
     - results: a list of (example, prediction, score) tuples for each example in devset
+    - failed_examples: a list of (example, exception) tuples for examples whose program or
+      metric raised during evaluation; empty when there were no failures
     """
 
-    def __init__(self, score: float, results: list[tuple["dspy.Example", "dspy.Example", Any]]):
-        super().__init__(score=score, results=results)
+    def __init__(
+        self,
+        score: float,
+        results: list[tuple["dspy.Example", "dspy.Example", Any]],
+        failed_examples: list[tuple["dspy.Example", Exception]] | None = None,
+    ):
+        super().__init__(score=score, results=results, failed_examples=failed_examples or [])
 
     def __repr__(self):
         return f"EvaluationResult(score={self.score}, results=<list of {len(self.results)} results>)"
@@ -145,6 +152,9 @@ class Evaluate:
             - score: A float percentage score (e.g., 67.30) representing overall performance
 
             - results: a list of (example, prediction, score) tuples for each example in devset
+
+            - failed_examples: a list of (example, exception) tuples for examples whose program or
+              metric raised during evaluation; empty when there were no failures
         """
         metric = metric if metric is not None else self.metric
         devset = devset if devset is not None else self.devset
@@ -174,6 +184,8 @@ class Evaluate:
 
         results = executor.execute(process_item, devset)
         assert len(devset) == len(results)
+
+        failed_examples = [(devset[idx], exception) for idx, exception in sorted(executor.exceptions_map.items())]
 
         results = [((dspy.Prediction(), self.failure_score) if r is None else r) for r in results]
         results = [(example, prediction, score) for example, (prediction, score) in zip(devset, results, strict=False)]
@@ -223,6 +235,7 @@ class Evaluate:
         return EvaluationResult(
             score=round(100 * ncorrect / ntotal, 2),
             results=results,
+            failed_examples=failed_examples,
         )
 
     @staticmethod

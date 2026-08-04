@@ -221,6 +221,38 @@ def is_retryable_lm_error(error: Exception) -> bool:
     return isinstance(error, _RETRYABLE_LM_ERRORS)
 
 
+class ExecutionCancelledError(DSPyError):
+    """Raised when parallel execution is cancelled due to errors or interruption.
+
+    `ParallelExecutor` raises this error when the number of task failures
+    reaches `max_errors` or execution is interrupted. It carries the per-item
+    exceptions and any results that completed before cancellation, so callers
+    can inspect what failed and recover partial progress.
+
+    Args:
+        message: Human-readable error message.
+        exceptions_map: Mapping from item index to the exception raised while
+            processing that item.
+        partial_results: Results in input order, with `None` for items that
+            failed or did not complete before cancellation.
+        **kwargs: Structured error metadata accepted by `DSPyError`.
+    """
+
+    default_code = "execution_cancelled"
+
+    def __init__(
+        self,
+        message: str = "Execution cancelled due to errors or interruption.",
+        *,
+        exceptions_map: dict[int, Exception] | None = None,
+        partial_results: list | None = None,
+        **kwargs: Any,
+    ):
+        self.exceptions_map = dict(exceptions_map or {})
+        self.partial_results = list(partial_results or [])
+        super().__init__(message, **kwargs)
+
+
 class AdapterParseError(DSPyError):
     """Raised when an adapter cannot parse an LM response into signature outputs.
 

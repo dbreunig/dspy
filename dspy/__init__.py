@@ -25,6 +25,7 @@ from dspy.utils.exceptions import (
     AdapterParseError,
     ContextWindowExceededError,
     DSPyError,
+    ExecutionCancelledError,
     LMAuthError,
     LMBillingError,
     LMConfigurationError,
