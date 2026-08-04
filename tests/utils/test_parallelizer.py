@@ -5,6 +5,7 @@ from unittest import mock
 
 import pytest
 
+import dspy
 from dspy.utils.callback import ACTIVE_CALL_ID
 from dspy.utils.parallelizer import ParallelExecutor
 
@@ -54,14 +55,23 @@ def test_parallel_execution_speed():
 def test_max_errors_handling():
     def task(item):
         if item == 3:
+            time.sleep(0.3)
             raise ValueError("Intentional error")
+        if item in (4, 5):
+            time.sleep(1.5)
         return item
 
     data = [1, 2, 3, 4, 5]
     executor = ParallelExecutor(num_threads=3, max_errors=1)
 
-    with pytest.raises(Exception, match="Execution cancelled due to errors or interruption."):
+    with pytest.raises(dspy.ExecutionCancelledError, match="Execution cancelled due to errors or interruption.") as exc_info:
         executor.execute(task, data)
+
+    error = exc_info.value
+    assert list(error.exceptions_map.keys()) == [2]
+    assert isinstance(error.exceptions_map[2], ValueError)
+    assert str(error.exceptions_map[2]) == "Intentional error"
+    assert error.partial_results == [1, 2, None, None, None]
 
 
 def test_max_errors_not_met():
@@ -145,8 +155,14 @@ def test_sequential_max_errors_exceeded():
     data = [1, 2, 3, 4, 5]
     executor = ParallelExecutor(num_threads=1, max_errors=1)
 
-    with pytest.raises(Exception, match="Execution cancelled due to errors or interruption."):
+    with pytest.raises(dspy.ExecutionCancelledError, match="Execution cancelled due to errors or interruption.") as exc_info:
         executor.execute(task, data)
+
+    error = exc_info.value
+    assert list(error.exceptions_map.keys()) == [2]
+    assert isinstance(error.exceptions_map[2], ValueError)
+    assert str(error.exceptions_map[2]) == "Intentional error"
+    assert error.partial_results == [1, 2, None, None, None]
 
 
 def test_sequential_tracks_failed_indices_and_exceptions():

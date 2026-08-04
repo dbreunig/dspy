@@ -54,6 +54,7 @@ def test_evaluate_call():
     )
     score = ev(program)
     assert score.score == 100.0
+    assert score.failed_examples == []
 
 
 def test_evaluate_single_thread_runs_in_main_thread():
@@ -234,6 +235,32 @@ def test_evaluate_display_table(program_with_example, display_table, is_in_ipyth
             # to the console
             example_input = next(iter(example.inputs().values()))
             assert example_input in out
+
+
+def test_evaluate_failed_examples():
+    dspy.configure(lm=DummyLM({"What is 1+1?": {"answer": "2"}, "What is 2+2?": {"answer": "4"}}))
+    devset = [new_example("What is 1+1?", "2"), new_example("What is 2+2?", "4")]
+    program = Predict("question -> answer")
+
+    def flaky_metric(example, prediction, **kwargs):
+        if example.question == "What is 2+2?":
+            raise ValueError("Intentional metric error")
+        return answer_exact_match(example, prediction, **kwargs)
+
+    ev = Evaluate(
+        devset=devset,
+        metric=flaky_metric,
+        display_progress=False,
+    )
+    result = ev(program)
+
+    assert result.score == 50.0
+    assert len(result.failed_examples) == 1
+    failed_example, exception = result.failed_examples[0]
+    assert failed_example is devset[1]
+    assert isinstance(exception, ValueError)
+    assert str(exception) == "Intentional metric error"
+    assert result.results[1][2] == ev.failure_score
 
 
 def test_evaluate_callback():
