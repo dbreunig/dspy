@@ -1,5 +1,7 @@
+import signal
 import threading
 import time
+from unittest import mock
 
 import pytest
 
@@ -182,3 +184,34 @@ def test_sequential_compare_results():
     results = executor.execute(task, data)
 
     assert results == [(1, False), (2, False), (3, True), (4, True), (5, True)]
+
+
+def test_none_returning_tasks_complete():
+    def task(item):
+        return None
+
+    data = [1, 2, 3, 4, 5]
+    for num_threads in (1, 3):
+        executor = ParallelExecutor(num_threads=num_threads, disable_progress_bar=True)
+        results = executor.execute(task, data)
+
+        assert results == [None] * len(data)
+
+
+def test_sigint_handler_with_non_callable_original_handler():
+    installed_handlers = []
+
+    def fake_signal(sig, handler):
+        installed_handlers.append(handler)
+        return signal.SIG_IGN
+
+    executor = ParallelExecutor(num_threads=2, disable_progress_bar=True)
+    with mock.patch("dspy.utils.parallelizer.signal.getsignal", return_value=signal.SIG_IGN), \
+         mock.patch("dspy.utils.parallelizer.signal.signal", side_effect=fake_signal):
+        results = executor.execute(lambda item: item, [1, 2, 3])
+
+    assert results == [1, 2, 3]
+
+    handler = installed_handlers[0]
+    handler(signal.SIGINT, None)
+    assert executor.cancel_jobs.is_set()
