@@ -1,4 +1,5 @@
 import inspect
+import logging
 import textwrap
 from typing import Callable
 
@@ -10,6 +11,8 @@ from dspy.predict.predict import Prediction
 from dspy.signatures import InputField, OutputField, Signature
 
 from .predict import Module
+
+logger = logging.getLogger(__name__)
 
 
 class OfferFeedback(Signature):
@@ -100,6 +103,7 @@ class Refine(Module):
         start = lm.kwargs.get("rollout_id", 0)
         rollout_ids = [start + i for i in range(self.N)]
         best_pred, best_trace, best_reward = None, None, -float("inf")
+        last_error = None
         advice = None
         adapter = dspy.settings.adapter or dspy.ChatAdapter()
 
@@ -168,12 +172,15 @@ class Refine(Module):
                 # print(f"Advice for each module: {advice}")
 
             except Exception as e:
-                print(f"Refine: Attempt failed with rollout id {rid}: {e}")
+                logger.warning(f"Refine: Attempt failed with rollout id {rid}: {e}")
                 if idx > self.fail_count:
                     raise e
                 self.fail_count -= 1
+                last_error = e
         if best_trace:
             dspy.settings.trace.extend(best_trace)
+        if best_pred is None and last_error is not None:
+            raise last_error
         return best_pred
 
 
