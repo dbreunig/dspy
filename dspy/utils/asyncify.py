@@ -1,4 +1,6 @@
+import asyncio
 import functools
+import weakref
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 import anyio
@@ -7,7 +9,9 @@ from anyio import CapacityLimiter
 if TYPE_CHECKING:
     from dspy.primitives.module import Module
 
-_limiter = None
+# anyio's CapacityLimiter is bound to the event loop it was created on, so each loop
+# needs its own limiter. Keying weakly on the loop lets dead loops release theirs.
+_limiters: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, CapacityLimiter]" = weakref.WeakKeyDictionary()
 
 
 def get_async_max_workers():
@@ -19,13 +23,15 @@ def get_async_max_workers():
 def get_limiter():
     async_max_workers = get_async_max_workers()
 
-    global _limiter
-    if _limiter is None:
-        _limiter = CapacityLimiter(async_max_workers)
-    elif _limiter.total_tokens != async_max_workers:
-        _limiter.total_tokens = async_max_workers
+    loop = asyncio.get_running_loop()
+    limiter = _limiters.get(loop)
+    if limiter is None:
+        limiter = CapacityLimiter(async_max_workers)
+        _limiters[loop] = limiter
+    elif limiter.total_tokens != async_max_workers:
+        limiter.total_tokens = async_max_workers
 
-    return _limiter
+    return limiter
 
 
 def asyncify(program: "Module") -> Callable[[Any, Any], Awaitable[Any]]:
