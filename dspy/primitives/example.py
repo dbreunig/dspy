@@ -161,6 +161,9 @@ class Example:
     def __hash__(self):
         return hash(tuple(self._store.items()))
 
+    def __dir__(self):
+        return sorted(set(super().__dir__()) | set(self._store.keys()))
+
     def keys(self, include_dspy=False):
         """Return field names, like `dict.keys()`.
 
