@@ -128,6 +128,15 @@ class Module(BaseModule, metaclass=ProgramMeta):
 
             return await self.aforward(*args, **kwargs)
 
+    async def aforward(self, *args, **kwargs):
+        """Fallback for modules that only define a sync ``forward``: runs it in a
+        worker thread with the caller's settings overrides, via the same machinery
+        as ``dspy.asyncify``. Subclasses with native async logic should override this.
+        """
+        from dspy.utils.asyncify import asyncify
+
+        return await asyncify(self.forward)(*args, **kwargs)
+
     def named_predictors(self):
         """Return all named Predict modules in this module.
 
@@ -339,7 +348,7 @@ class Module(BaseModule, metaclass=ProgramMeta):
         if name == "forward" and callable(attr):
             # Check if forward is called through __call__ or directly
             stack = inspect.stack()
-            forward_called_directly = len(stack) <= 1 or stack[1].function != "__call__"
+            forward_called_directly = len(stack) <= 1 or stack[1].function not in ("__call__", "aforward")
 
             if forward_called_directly:
                 logger.warning(
