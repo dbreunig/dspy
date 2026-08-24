@@ -147,6 +147,8 @@ class Evaluate:
             - results: a list of (example, prediction, score) tuples for each example in devset
         """
         metric = metric if metric is not None else self.metric
+        if metric is None:
+            raise ValueError("A `metric` is required to run `Evaluate`; pass one to the constructor or to `__call__`.")
         devset = devset if devset is not None else self.devset
         num_threads = num_threads if num_threads is not None else self.num_threads
         display_progress = display_progress if display_progress is not None else self.display_progress
