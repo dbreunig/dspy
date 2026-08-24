@@ -83,8 +83,6 @@ class Unbatchify:
             except queue.Empty:
                 break
 
-        print("Worker thread has been terminated.")
-
     def close(self):
         """
         Stops the worker thread and cleans up resources.
