@@ -461,3 +461,11 @@ def test_evaluate_save_as_csv_with_history():
         if os.path.exists(temp_csv):
             os.unlink(temp_csv)
 
+
+
+def test_evaluate_raises_on_missing_metric():
+    dspy.configure(lm=DummyLM({"What is 1+1?": {"answer": "2"}}))
+    program = Predict("question -> answer")
+    ev = Evaluate(devset=[new_example("What is 1+1?", "2")], display_progress=False)
+    with pytest.raises(ValueError, match="metric"):
+        ev(program)
