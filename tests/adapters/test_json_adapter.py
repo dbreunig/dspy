@@ -1716,3 +1716,23 @@ def test_missing_optional_output_fields_fall_back_to_defaults():
 
     with pytest.raises(AdapterParseError):
         adapter.parse(OptionalOutputSignature, '{"note": "present"}')
+
+
+def test_json_adapter_does_not_call_lm_twice_on_empty_result():
+    class TestSignature(dspy.Signature):
+        question: str = dspy.InputField()
+        answer: str = dspy.OutputField()
+
+    program = dspy.Predict(TestSignature)
+
+    # A provider without `response_format` support takes the early-return path in `_json_adapter_call_common`.
+    # An empty completions list from that path must not fall through to a second, structured-output LM call.
+    dspy.configure(lm=dspy.LM(model="fakeprovider/fakemodel", cache=False), adapter=dspy.JSONAdapter())
+    with mock.patch("litellm.completion") as mock_completion:
+        mock_completion.return_value = ModelResponse(choices=[], model="fakeprovider/fakemodel")
+
+        program(question="Dummy question!")
+
+    mock_completion.assert_called_once()
+    _, call_kwargs = mock_completion.call_args
+    assert "response_format" not in call_kwargs
