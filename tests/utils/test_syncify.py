@@ -1,4 +1,7 @@
 import asyncio
+import subprocess
+import sys
+import textwrap
 
 import dspy
 
@@ -55,3 +58,26 @@ def test_syncify_works_with_optimizers():
     sync_program = dspy.syncify(async_program, in_place=False)
     optimized_program = optimizer.compile(sync_program, trainset=dataset)
     assert len(optimized_program.predictors()[0].demos) == 2
+
+
+
+def test_run_async_inside_running_event_loop():
+    # Exercises the `nest_asyncio` branch of `run_async`, taken when called from an already-running loop
+    # (e.g. Jupyter). Run in a subprocess because `nest_asyncio.apply()` patches asyncio process-wide.
+    script = textwrap.dedent(
+        """
+        import asyncio
+        from dspy.utils.syncify import run_async
+
+        async def inner():
+            await asyncio.sleep(0.01)
+            return 42
+
+        async def outer():
+            return run_async(inner())
+
+        print(asyncio.run(outer()))
+        """
+    )
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True)
+    assert result.stdout.strip() == "42"
