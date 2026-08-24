@@ -82,7 +82,7 @@ def test_xml_adapter_parse_raises_on_type_error():
     completion = "<number>not_a_number</number>"
     with pytest.raises(dspy.utils.exceptions.AdapterParseError) as e:
         adapter.parse(TestSignature, completion)
-    assert "Failed to parse field" in str(e.value)
+    assert "Failed to parse field number with value not_a_number" in str(e.value)
 
 
 def test_xml_adapter_repeated_dict_elements_and_empty_lists():
