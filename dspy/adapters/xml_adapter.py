@@ -125,7 +125,7 @@ class XMLAdapter(ChatAdapter):
                     adapter_name="XMLAdapter",
                     signature=signature,
                     lm_response=completion,
-                    message=f"Failed to parse field {field} with value {value}: {error}",
+                    message=f"Failed to parse field {name} with value {value}: {error}",
                 ) from error
         fields = apply_output_field_defaults(signature, fields)
         if fields.keys() != signature.output_fields.keys():
