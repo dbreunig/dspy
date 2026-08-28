@@ -24,7 +24,7 @@ def convert_langchain_tool(tool: "BaseTool") -> Tool:
             result = await tool.ainvoke(kwargs)
             return result
         except Exception as e:
-            raise RuntimeError(f"Failed to call LangChain tool {tool.name}: {e!s}")
+            raise RuntimeError(f"Failed to call LangChain tool {tool.name}: {e!s}") from e
 
     # Get args_schema from the tool
     # https://python.langchain.com/api_reference/core/tools/langchain_core.tools.base.BaseTool.html#langchain_core.tools.base.BaseTool.args_schema
