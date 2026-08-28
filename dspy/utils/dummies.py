@@ -130,15 +130,16 @@ class DummyLM(BaseLM):
 
         choices = []
         for _ in range(kwargs.get("n", 1)):
-            if self.follow_examples:
-                current_output = self._use_example(messages)
-            elif isinstance(self.answers, dict):
-                current_output = next(
-                    (self._format_answer_fields(v) for k, v in self.answers.items() if k in messages[-1]["content"]),
-                    "No more responses",
-                )
-            else:
-                current_output = self._format_answer_fields(next(self.answers, {"answer": "No more responses"}))
+            current_output = self._use_example(messages) if self.follow_examples else None
+            if current_output is None:
+                # No matching example in the prompt (or `follow_examples` is off): fall back to the answers.
+                if isinstance(self.answers, dict):
+                    current_output = next(
+                        (self._format_answer_fields(v) for k, v in self.answers.items() if k in messages[-1]["content"]),
+                        "No more responses",
+                    )
+                else:
+                    current_output = self._format_answer_fields(next(self.answers, {"answer": "No more responses"}))
 
             message = dotdict(content=current_output, tool_calls=None)
             if self.reasoning:
