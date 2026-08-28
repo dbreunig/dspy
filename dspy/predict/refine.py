@@ -27,9 +27,9 @@ class OfferFeedback(Signature):
     program_trajectory: str = InputField(desc="The trajectory of the program's execution, showing each module's I/O")
     program_outputs: str = InputField(desc="The outputs of the program that we are analyzing")
     reward_code: str = InputField(desc="The code of the reward function that we are analyzing")
-    target_threshold: float = InputField(desc="The target threshold for the reward function")
-    reward_value: float = InputField(desc="The reward value assigned to the program's outputs")
-    module_names: list[str] = InputField(desc="The names of the modules in the program, for which we seek advice")
+    target_threshold: str = InputField(desc="The target threshold for the reward function")
+    reward_value: str = InputField(desc="The reward value assigned to the program's outputs")
+    module_names: str = InputField(desc="The names of the modules in the program, for which we seek advice")
     discussion: str = OutputField(desc="Discussing blame of where each module went wrong, if it did")
     advice: dict[str, str] = OutputField(
         desc="For each module, describe very concretely, in this order: the specific scenarios in which it has made "
