@@ -270,7 +270,7 @@ class SIMBA(Teleprompter):
                 num_demos_to_drop = min(num_demos_to_drop, num_demos)
                 demos_to_drop = [rng.randrange(num_demos) for _ in range(num_demos_to_drop)]
 
-                for _, predictor in name2predictor.items():
+                for predictor in name2predictor.values():
                     predictor.demos = [demo for idxd, demo in enumerate(predictor.demos) if idxd not in demos_to_drop]
 
                 # Pick a strategy
