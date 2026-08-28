@@ -35,6 +35,7 @@ dependencies = [
     "cachetools>=5.5.0",
     "cloudpickle>=3.1.2",
     "gepa[dspy]==0.1.4",
+    "nest-asyncio>=1.5.6",
 ]
 
 [project.optional-dependencies]
