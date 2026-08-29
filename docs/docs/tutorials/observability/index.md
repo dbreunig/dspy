@@ -85,6 +85,38 @@ The log reveals that the agent could not retrieve helpful information from the s
 
 **Tracing** addresses these limitations and provides a more comprehensive solution.
 
+## Console Tracing
+
+For a zero-infrastructure view of the execution tree, DSPy ships a `LoggingCallback` that prints each module, adapter, LM, and tool call to the console as it happens, indented by nesting level and annotated with elapsed time (`✗` marks a span that raised an exception):
+
+```python
+import dspy
+from dspy.utils import LoggingCallback
+
+dspy.configure(callbacks=[LoggingCallback()])
+agent(question="Which baseball team does Shohei Ohtani play for in June 2025?")
+```
+
+```
+▸ ReAct
+  ▸ Predict(question -> next_thought, next_tool_name, next_tool_args)
+    ▸ ChatAdapter.format
+    ✓ ChatAdapter.format (0.00s)
+    ▸ LM(openai/gpt-4o-mini)
+    ✓ LM(openai/gpt-4o-mini) (0.85s)
+    ▸ ChatAdapter.parse
+    ✓ ChatAdapter.parse (0.00s)
+  ✓ Predict(question -> next_thought, next_tool_name, next_tool_args) (0.86s)
+  ▸ Tool(retrieve)
+  ✓ Tool(retrieve) (0.12s)
+  ...
+✓ ReAct (3.42s)
+```
+
+Pass `LoggingCallback(verbose=False)` to hide the adapter `format`/`parse` spans and show only module, LM, and tool calls.
+
+This shows the shape and timing of a run, but not the prompts and responses themselves. For full traces with inputs and outputs, use MLflow tracing below.
+
 ## Tracing
 
 [MLflow](https://mlflow.org/docs/latest/llms/tracing/index.html) is an end-to-end machine learning platform that is integrated seamlessly with DSPy to support best practices in LLMOps. Using MLflow's automatic tracing capability with DSPy is straightforward; **No sign up for services or an API key is required**. You just need to install MLflow and call `mlflow.dspy.autolog()` in your notebook or script.
