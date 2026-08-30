@@ -35,6 +35,9 @@ DEFAULT_CONFIG = dotdict(
     max_history_size=10000,
     max_trace_size=10000,
     warn_on_type_mismatch=True,  # Whether to log warnings when a module's input type doesn't match the signature type.
+    # If true, raise ValueError instead of logging a warning when module inputs are missing, unexpected, or
+    # incompatible with the signature's declared types.
+    strict_types=False,
 )
 
 # Global base configuration and owner tracking
