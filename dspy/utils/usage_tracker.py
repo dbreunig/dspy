@@ -21,6 +21,8 @@ class UsageTracker:
         #     ],
         # }
         self.usage_data = defaultdict(list)
+        # Map of LM name to accumulated response cost, e.g. {"openai/gpt-4o-mini": 0.0021}.
+        self.total_cost_by_model = defaultdict(float)
 
     def _flatten_usage_entry(self, usage_entry: dict[str, Any]) -> dict[str, Any]:
         result = {}
@@ -49,10 +51,12 @@ class UsageTracker:
                 result[k] = (current_v or 0) + (v or 0)
         return result
 
-    def add_usage(self, lm: str, usage_entry: dict[str, Any]) -> None:
-        """Add a usage entry to the tracker."""
+    def add_usage(self, lm: str, usage_entry: dict[str, Any], cost: float | None = None) -> None:
+        """Add a usage entry, and optionally its response cost, to the tracker."""
         if len(usage_entry) > 0:
             self.usage_data[lm].append(self._flatten_usage_entry(usage_entry))
+        if cost is not None:
+            self.total_cost_by_model[lm] += cost
 
     def get_total_tokens(self) -> dict[str, dict[str, Any]]:
         """Calculate total tokens from all tracked usage."""
@@ -63,6 +67,10 @@ class UsageTracker:
                 total_usage = self._merge_usage_entries(total_usage, usage_entry)
             total_usage_by_lm[lm] = total_usage
         return total_usage_by_lm
+
+    def get_total_cost(self) -> float:
+        """Calculate the total cost from all tracked usage, 0.0 when no costs were reported."""
+        return sum(self.total_cost_by_model.values(), 0.0)
 
 
 @contextmanager

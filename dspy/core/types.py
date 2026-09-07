@@ -937,6 +937,7 @@ class LMHistoryEntry(BaseModel, Mapping[str, Any]):
 
     request: LMRequest
     response: LMResponse
+    duration: float | None = None
     timestamp: str
     uuid: str
     model_type: str | None = None
