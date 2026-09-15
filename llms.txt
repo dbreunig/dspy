@@ -1,0 +1,30 @@
+# DSPy
+
+> DSPy is a framework for programming—rather than prompting—language models. Instead of hand-tuning prompt strings, you write compositional Python: declarative Signatures describe input/output behavior, Modules implement strategies for satisfying them, and optimizers (teleprompters) tune prompts and weights against metrics you define.
+
+This file indexes the source repository for AI agents. For the rendered documentation index, see https://dspy.ai/llms.txt.
+
+## Core concepts
+
+- [Signatures](dspy/signatures/): declarative input/output specs; `Signature`, `InputField`, `OutputField`, and string-signature parsing in `dspy/signatures/signature.py`
+- [Modules and prediction](dspy/predict/): `Predict`, `ChainOfThought`, `ReAct`, and other strategies built on signatures
+- [Primitives](dspy/primitives/): `Module` base class, `Example`, `Prediction`, and the Python interpreter tool
+- [Adapters](dspy/adapters/): translate between signatures and LM message formats (chat, JSON, XML, two-step)
+- [LM clients](dspy/clients/): `dspy.LM` and provider integrations built on LiteLLM, plus caching and fine-tuning jobs
+- [Optimizers](dspy/teleprompt/): prompt/weight optimization, e.g. `BootstrapFewShot`, `MIPROv2`, `GEPA`
+
+## Key reference points
+
+- [Exception taxonomy](dspy/utils/exceptions.py): `DSPyError` and its subclasses
+- [Settings and context rules](dspy/dsp/utils/settings.py): global configuration, thread ownership, and `dspy.context` overrides
+- [Callback system](dspy/utils/callback.py): `BaseCallback` hooks around modules, LMs, adapters, and tools
+
+## Docs
+
+- [DSPy documentation](https://dspy.ai)
+- [Docs index for LLMs](https://dspy.ai/llms.txt)
+
+## Development
+
+- Run tests: `uv run pytest tests/`
+- Lint: `uv run ruff check .`
