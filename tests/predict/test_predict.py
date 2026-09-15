@@ -1104,6 +1104,70 @@ def test_extra_fields_warning(caplog):
     assert "extra_field" in caplog.text
 
 
+def test_strict_types_raises_on_extra_fields():
+    lm = DummyLM([{"answer": "test output"}])
+
+    with dspy.context(lm=lm, strict_types=True):
+        predict_instance = Predict("question -> answer")
+        with pytest.raises(ValueError, match=r"fields not in signature: \['extra_field'\]"):
+            predict_instance(question="test", extra_field="should raise")
+
+
+def test_strict_types_raises_on_type_mismatch():
+    lm = DummyLM([{"answer": "test output"}])
+
+    class TypedSignature(dspy.Signature):
+        count: int = dspy.InputField()
+        answer: str = dspy.OutputField()
+
+    with dspy.context(lm=lm, strict_types=True):
+        predict_instance = Predict(TypedSignature)
+        with pytest.raises(ValueError, match="Type mismatch for field 'count': expected int"):
+            predict_instance(count="not a number")
+
+
+def test_strict_types_raises_on_type_mismatch_even_when_warnings_disabled():
+    lm = DummyLM([{"answer": "test output"}])
+
+    class TypedSignature(dspy.Signature):
+        count: int = dspy.InputField()
+        answer: str = dspy.OutputField()
+
+    with dspy.context(lm=lm, strict_types=True, warn_on_type_mismatch=False):
+        predict_instance = Predict(TypedSignature)
+        with pytest.raises(ValueError, match="Type mismatch for field 'count'"):
+            predict_instance(count="not a number")
+
+
+def test_strict_types_raises_on_missing_required_field():
+    lm = DummyLM([{"answer": "test output"}])
+
+    class OptionalInputSignature(dspy.Signature):
+        question: str = dspy.InputField()
+        context: str | None = dspy.InputField()
+        answer: str = dspy.OutputField()
+
+    with dspy.context(lm=lm, strict_types=True):
+        predict_instance = Predict(OptionalInputSignature)
+        with pytest.raises(ValueError, match=r"Missing: \['question'\]"):
+            predict_instance()
+
+
+def test_strict_types_allows_valid_inputs():
+    lm = DummyLM([{"answer": "test output"}])
+
+    class TypedSignature(dspy.Signature):
+        count: int = dspy.InputField()
+        context: str | None = dspy.InputField()
+        answer: str = dspy.OutputField()
+
+    with dspy.context(lm=lm, strict_types=True):
+        predict_instance = Predict(TypedSignature)
+        result = predict_instance(count=3)
+
+    assert result.answer == "test output"
+
+
 def test_missing_optional_input_field_no_warning(caplog):
     log_test_helper()
 
