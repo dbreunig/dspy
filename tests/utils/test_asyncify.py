@@ -12,12 +12,34 @@ from dspy.utils.asyncify import get_limiter
 async def test_async_limiter():
     limiter = get_limiter()
     assert limiter.total_tokens == 8, "Default async capacity should be 8"
-    assert get_limiter() == limiter, "AsyncLimiter should be a singleton"
+    assert get_limiter() == limiter, "The limiter should be reused within one event loop"
 
     with dspy.context(async_max_workers=16):
-        assert get_limiter() == limiter, "AsyncLimiter should be a singleton"
+        assert get_limiter() == limiter, "The limiter should be reused within one event loop"
         assert get_limiter().total_tokens == 16, "Async capacity should be 16"
-        assert get_limiter() == get_limiter(), "AsyncLimiter should be a singleton"
+        assert get_limiter() == get_limiter(), "The limiter should be reused within one event loop"
+
+
+def test_limiter_is_per_event_loop():
+    async def grab_limiter():
+        return get_limiter()
+
+    first = asyncio.run(grab_limiter())
+    second = asyncio.run(grab_limiter())
+    assert first is not second, "Each event loop should get its own limiter"
+
+
+def test_asyncify_across_event_loops():
+    def the_answer():
+        return 42
+
+    ask = dspy.asyncify(the_answer)
+
+    async def run():
+        return await ask()
+
+    assert asyncio.run(run()) == 42
+    assert asyncio.run(run()) == 42, "A second event loop should not reuse the first loop's limiter"
 
 
 @pytest.mark.anyio
