@@ -27,7 +27,7 @@ class FinetuneTeleprompter(Teleprompter):
     @staticmethod
     def convert_to_lm_dict(arg) -> dict[LM, Any]:
         non_empty_dict = arg and isinstance(arg, dict)
-        if non_empty_dict and all(isinstance(k, LM) for k in arg.keys()):
+        if non_empty_dict and all(isinstance(k, LM) for k in arg):
             return arg
         # Default to using the same value for all LMs
         return defaultdict(lambda: arg)

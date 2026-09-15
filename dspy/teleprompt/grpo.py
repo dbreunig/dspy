@@ -358,7 +358,7 @@ class GRPO(FinetuneTeleprompter):
                 train_step_idx=train_step_idx,
             )
             def _any_available_for_step():
-                for _, job in grpo_training_jobs.items():
+                for job in grpo_training_jobs.values():
                     grpo_status: GRPOStatus = job.get_status()
                     pending_batch_ids = grpo_status["pending_batch_ids"]
                     available = set(pending_batch_ids) - set(self.fulfilled_batch_ids)
@@ -599,7 +599,7 @@ class GRPO(FinetuneTeleprompter):
             )
 
         logger.info("Done with the iterations! Retrieving the final model(s)...")
-        for _, job in grpo_training_jobs.items():
+        for job in grpo_training_jobs.values():
             job.terminate()
 
         # Revert cache states to their initial values
