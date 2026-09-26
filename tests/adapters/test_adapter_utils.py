@@ -5,7 +5,7 @@ from typing import Literal, Optional, Union
 import pytest
 from pydantic import BaseModel
 
-from dspy.adapters.utils import parse_value
+from dspy.adapters.utils import _type_adapter_for, parse_value, serialize_for_json
 
 
 class Profile(BaseModel):
@@ -115,3 +115,43 @@ def test_parse_value_json_repair():
     malformed = "not json or literal"
     with pytest.raises(Exception):
         parse_value(malformed, dict)
+
+
+class _Unserializable:
+    def __str__(self):
+        return "unserializable"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "hello",
+        3,
+        2.5,
+        True,
+        None,
+        [1, "a", {"b": 2}],
+        {"k": [1, 2]},
+        Profile(name="John", age=30),
+        _Unserializable(),
+    ],
+)
+def test_serialize_for_json_matches_uncached_type_adapter(value):
+    from pydantic import TypeAdapter
+
+    try:
+        expected = TypeAdapter(type(value)).dump_python(value, mode="json")
+    except Exception:
+        expected = str(value)
+    assert serialize_for_json(value) == expected
+
+
+def test_serialize_for_json_reuses_type_adapter_per_type():
+    # One adapter per type: the same object serves every value of that type.
+    assert _type_adapter_for(Profile) is _type_adapter_for(Profile)
+    assert _type_adapter_for(str) is not _type_adapter_for(int)
+
+    hits_before = _type_adapter_for.cache_info().hits
+    serialize_for_json("first")
+    serialize_for_json("second")
+    assert _type_adapter_for.cache_info().hits >= hits_before + 1
