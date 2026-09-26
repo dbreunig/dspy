@@ -542,3 +542,21 @@ def test_forward_through_call_no_warning(capsys):
     module(x="test")
     captured = capsys.readouterr()
     assert "directly is discouraged" not in captured.err
+
+
+def test_forward_guard_does_not_walk_the_stack(monkeypatch):
+    # The ``forward`` access guard runs on every module call. It must read only the
+    # caller's frame, never ``inspect.stack()``, which loads source context for
+    # every frame and dominated the cost of a module call.
+    import inspect
+
+    class TestModule(dspy.Module):
+        def forward(self, x):
+            return x
+
+    def fail(*args, **kwargs):
+        raise AssertionError("inspect.stack() must not run on module call")
+
+    monkeypatch.setattr(inspect, "stack", fail)
+    module = TestModule()
+    assert module(x="test") == "test"
