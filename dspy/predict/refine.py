@@ -1,4 +1,5 @@
 import inspect
+import logging
 import textwrap
 from typing import Callable
 
@@ -10,6 +11,8 @@ from dspy.predict.predict import Prediction
 from dspy.signatures import InputField, OutputField, Signature
 
 from .predict import Module
+
+logger = logging.getLogger(__name__)
 
 
 class OfferFeedback(Signature):
@@ -168,7 +171,7 @@ class Refine(Module):
                 # print(f"Advice for each module: {advice}")
 
             except Exception as e:
-                print(f"Refine: Attempt failed with rollout id {rid}: {e}")
+                logger.warning(f"Refine: Attempt failed with rollout id {rid}: {e}")
                 if idx > self.fail_count:
                     raise e
                 self.fail_count -= 1
