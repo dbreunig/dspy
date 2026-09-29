@@ -32,6 +32,8 @@ def EM(prediction, answers_list):  # noqa: N802
     """
     if not isinstance(answers_list, list):
         raise ValueError(f"`answers_list` must be a list, got {type(answers_list)}")
+    if not answers_list:
+        raise ValueError("`answers_list` must contain at least one answer")
 
     return max(em_score(prediction, ans) for ans in answers_list)
 
@@ -56,6 +58,8 @@ def F1(prediction, answers_list):  # noqa: N802
     """
     if not isinstance(answers_list, list):
         raise ValueError(f"`answers_list` must be a list, got {type(answers_list)}")
+    if not answers_list:
+        raise ValueError("`answers_list` must contain at least one answer")
 
     return max(f1_score(prediction, ans) for ans in answers_list)
 
@@ -80,6 +84,8 @@ def HotPotF1(prediction, answers_list):  # noqa: N802
     """
     if not isinstance(answers_list, list):
         raise ValueError(f"`answers_list` must be a list, got {type(answers_list)}")
+    if not answers_list:
+        raise ValueError("`answers_list` must contain at least one answer")
 
     return max(hotpot_f1_score(prediction, ans) for ans in answers_list)
 
