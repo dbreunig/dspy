@@ -28,6 +28,18 @@ import dspy
 from dspy.adapters.types.decision import Choice, Noul, Score
 from dspy.adapters.types.tool import Tool
 from dspy.adapters.utils import parse_value, translate_field_type
+from dspy.predict.rlm_hooks import (
+    AFTER_DECISIONS,
+    BEFORE_DECISIONS,
+    AfterExecuteHook,
+    BeforeExecuteHook,
+    ExecutedStep,
+    Finish,
+    ProposedStep,
+    Reject,
+    Replace,
+    Run,
+)
 from dspy.primitives.code_interpreter import (
     SIMPLE_TYPES,
     CodeExecutionError,
@@ -136,6 +148,15 @@ class RLM(Module):
         rlm = dspy.RLM("context, query -> output", max_iters=10)
         result = rlm(context="...very long text...", query="What is the magic number?")
         print(result.output)
+
+        # Review each step before and after it runs
+        from dspy.predict.rlm_hooks import Reject
+
+        def review(step):
+            if "subprocess" in step.code:
+                return Reject("Don't shell out; use the provided tools.")
+
+        rlm = dspy.RLM("context, query -> output", before_execute=review)
         ```
     """
 
@@ -149,6 +170,8 @@ class RLM(Module):
         tools: list[Callable] | None = None,
         sub_lm: dspy.LM | None = None,
         interpreter_factory: Callable[[], CodeInterpreter] = PythonInterpreter,
+        before_execute: BeforeExecuteHook | None = None,
+        after_execute: AfterExecuteHook | None = None,
     ):
         """
         Args:
@@ -169,6 +192,14 @@ class RLM(Module):
                 active factory's instructions to each action call, so ``dspy.context`` can switch runtimes
                 without changing the shared predictor signature. Defaults to ``dspy.PythonInterpreter``;
                 ``dspy.configure(interpreter_factory=...)`` replaces the default.
+            before_execute: Optional hook called with a ``ProposedStep`` after the model proposes code and before
+                it runs. Return ``None`` or ``Run()`` to run it, ``Run(code=...)`` to run edited code,
+                ``Reject(feedback)`` to skip it and show feedback to the model, or ``Finish(**outputs)`` to end
+                the run. Types live in ``dspy.predict.rlm_hooks``. ``aforward`` also accepts async hooks.
+            after_execute: Optional hook called with an ``ExecutedStep`` after the code runs. Return ``None`` to
+                keep the result, ``Reject(feedback)`` to add feedback (a rejected SUBMIT does not end the run),
+                ``Replace(output)`` to change what the model sees, or ``Finish(**outputs)`` to end the run.
+                Rejected and replaced steps still count against ``max_iters``.
         """
         super().__init__()
         _validate_interpreter_factory(interpreter_factory)
@@ -191,6 +222,8 @@ class RLM(Module):
         self.verbose = verbose
         self.sub_lm = sub_lm
         self._interpreter_factory = interpreter_factory
+        self.before_execute = before_execute
+        self.after_execute = after_execute
         self._user_tools = self._normalize_tools(tools)
         self._validate_namespace(self._user_tools)
 
@@ -607,7 +640,7 @@ class RLM(Module):
         )
 
         return Prediction(
-            trajectory=[e.model_dump() for e in history],
+            trajectory=self._trajectory(history),
             final_reasoning="Extract forced final output",
             **{name: getattr(extract_pred, name) for name in output_field_names},
         )
@@ -648,48 +681,30 @@ class RLM(Module):
 
         return parsed_outputs, None
 
-    def _process_execution_result(
-        self,
-        pred: Prediction,
-        code: str,
-        result: Any,
-        history: REPLHistory,
-        output_field_names: list[str],
-    ) -> Prediction | REPLHistory:
-        """Process interpreter result, returning Prediction if final, else updated history.
+    @staticmethod
+    def _trajectory(history: REPLHistory) -> list[dict[str, Any]]:
+        return [e.model_dump(exclude_none=True) for e in history]
 
-        This shared helper reduces duplication between sync and async execution paths.
+    def _interpret_result(self, result: Any, output_field_names: list[str]) -> tuple[str, dict[str, Any] | None]:
+        """Turn an interpreter result into the text the model sees and, after a valid SUBMIT, the parsed outputs.
 
         Args:
-            pred: The prediction containing reasoning and code attributes
-            code: Code to record in history (already stripped when possible)
             result: Result from interpreter.execute() - FinalOutput, list, str, or error string
-            history: Current REPL history
             output_field_names: List of expected output field names
 
         Returns:
-            Prediction if FINAL was called successfully, else updated REPLHistory
+            (output, final_outputs), where final_outputs is None unless SUBMIT passed validation
         """
         # Handle error strings from caught exceptions
         if isinstance(result, str) and result.startswith("[Error]"):
-            output = self._format_output(result)
-            return history.append(reasoning=pred.reasoning, code=code, output=output)
+            return self._format_output(result), None
 
         # Handle FINAL output
         if isinstance(result, FinalOutput):
             parsed_outputs, error = self._process_final_output(result, output_field_names)
-
             if error:
-                return history.append(reasoning=pred.reasoning, code=code, output=error)
-
-            final_history = history.append(
-                reasoning=pred.reasoning, code=code, output=f"FINAL: {parsed_outputs}"
-            )
-            return Prediction(
-                **parsed_outputs,
-                trajectory=[e.model_dump() for e in final_history],
-                final_reasoning=pred.reasoning,
-            )
+                return error, None
+            return f"FINAL: {parsed_outputs}", parsed_outputs
 
         # Format non-final result as output
         if isinstance(result, list):
@@ -700,7 +715,84 @@ class RLM(Module):
         output = self._format_output(output)
         if self.verbose:
             logger.info(REPLEntry.format_output(output, self.max_output_chars))
-        return history.append(reasoning=pred.reasoning, code=code, output=output)
+        return output, None
+
+    def _record_step(
+        self,
+        reasoning: str,
+        proposed_code: str,
+        code: str,
+        output: str,
+        final_outputs: dict[str, Any] | None,
+        history: REPLHistory,
+    ) -> Prediction | REPLHistory:
+        """Append the step to history, returning a Prediction if the step produced final outputs."""
+        history = history.append(
+            reasoning=reasoning,
+            code=code,
+            output=output,
+            proposed_code=proposed_code if proposed_code != code else None,
+        )
+        if final_outputs is None:
+            return history
+        return Prediction(**final_outputs, trajectory=self._trajectory(history), final_reasoning=reasoning)
+
+    # =========================================================================
+    # Review Hooks
+    # =========================================================================
+
+    @staticmethod
+    def _check_decision(decision: Any, allowed: tuple[type, ...], hook_name: str) -> None:
+        if decision is not None and not isinstance(decision, allowed):
+            names = ", ".join(t.__name__ for t in allowed)
+            raise TypeError(f"{hook_name} must return None, {names}; got {type(decision).__name__}.")
+
+    @staticmethod
+    def _require_sync(decision: Any, hook_name: str) -> Any:
+        if inspect.isawaitable(decision):
+            if inspect.iscoroutine(decision):
+                decision.close()
+            raise TypeError(f"{hook_name} returned an awaitable; use aforward() for async hooks.")
+        return decision
+
+    def _parse_finish(self, decision: Finish, output_field_names: list[str]) -> dict[str, Any]:
+        parsed_outputs, error = self._process_final_output(FinalOutput(decision.outputs), output_field_names)
+        if error:
+            raise ValueError(f"Finish outputs are invalid: {error}")
+        return parsed_outputs
+
+    def _apply_before_decision(
+        self, decision: Any, code: str, output_field_names: list[str]
+    ) -> tuple[str, str | None, dict[str, Any] | None]:
+        """Apply a before_execute decision.
+
+        Returns:
+            (code, skipped_output, final_outputs). skipped_output is None when the code should run.
+        """
+        self._check_decision(decision, BEFORE_DECISIONS, "before_execute")
+        if isinstance(decision, Run) and decision.code is not None:
+            return decision.code, None, None
+        if isinstance(decision, Reject):
+            return code, f"[Reviewer feedback] Your code was not executed. {decision.feedback}", None
+        if isinstance(decision, Finish):
+            final_outputs = self._parse_finish(decision, output_field_names)
+            return code, "[Reviewer] Your code was not executed; the reviewer finished the run.", final_outputs
+        return code, None, None
+
+    def _apply_after_decision(
+        self, decision: Any, output: str, final_outputs: dict[str, Any] | None, output_field_names: list[str]
+    ) -> tuple[str, dict[str, Any] | None]:
+        """Apply an after_execute decision, returning the new (output, final_outputs)."""
+        self._check_decision(decision, AFTER_DECISIONS, "after_execute")
+        if isinstance(decision, Reject):
+            if final_outputs is not None:
+                return f"[Reviewer feedback] Your SUBMIT was rejected. {decision.feedback}", None
+            return f"{output}\n\n[Reviewer feedback] {decision.feedback}", None
+        if isinstance(decision, Replace):
+            return self._format_output(decision.output), None
+        if isinstance(decision, Finish):
+            return output, self._parse_finish(decision, output_field_names)
+        return output, final_outputs
 
     def _execute_code(
         self,
@@ -743,11 +835,30 @@ class RLM(Module):
         try:
             code = _strip_code_fences(action.code)
         except SyntaxError as e:
-            code = action.code
-            result = f"[Error] {format_error_for_lm(e)}"
-            return self._process_execution_result(action, code, result, history, output_field_names)
+            # The code never reaches the interpreter, so review hooks don't run.
+            output, _ = self._interpret_result(f"[Error] {format_error_for_lm(e)}", output_field_names)
+            return self._record_step(action.reasoning, action.code, action.code, output, None, history)
+
+        proposed_code = code
+        if self.before_execute is not None:
+            step = ProposedStep(iteration=iteration, reasoning=action.reasoning, code=code, history=history, repl=repl)
+            decision = self._require_sync(self.before_execute(step), "before_execute")
+            code, skipped_output, final_outputs = self._apply_before_decision(decision, code, output_field_names)
+            if skipped_output is not None:
+                return self._record_step(action.reasoning, proposed_code, code, skipped_output, final_outputs, history)
+
         result = self._execute_code(repl, code, input_args)
-        return self._process_execution_result(action, code, result, history, output_field_names)
+        output, final_outputs = self._interpret_result(result, output_field_names)
+
+        if self.after_execute is not None:
+            step = ExecutedStep(
+                iteration=iteration, reasoning=action.reasoning, code=code, history=history, repl=repl,
+                result=result, output=output, final_outputs=final_outputs,
+            )
+            decision = self._require_sync(self.after_execute(step), "after_execute")
+            output, final_outputs = self._apply_after_decision(decision, output, final_outputs, output_field_names)
+
+        return self._record_step(action.reasoning, proposed_code, code, output, final_outputs, history)
 
     # =========================================================================
     # Public Interface
@@ -808,7 +919,7 @@ class RLM(Module):
         )
 
         return Prediction(
-            trajectory=[e.model_dump() for e in history],
+            trajectory=self._trajectory(history),
             final_reasoning="Extract forced final output",
             **{name: getattr(extract_pred, name) for name in output_field_names},
         )
@@ -840,11 +951,34 @@ class RLM(Module):
         try:
             code = _strip_code_fences(pred.code)
         except SyntaxError as e:
-            code = pred.code
-            result = f"[Error] {format_error_for_lm(e)}"
-            return self._process_execution_result(pred, code, result, history, output_field_names)
+            # The code never reaches the interpreter, so review hooks don't run.
+            output, _ = self._interpret_result(f"[Error] {format_error_for_lm(e)}", output_field_names)
+            return self._record_step(pred.reasoning, pred.code, pred.code, output, None, history)
+
+        proposed_code = code
+        if self.before_execute is not None:
+            step = ProposedStep(iteration=iteration, reasoning=pred.reasoning, code=code, history=history, repl=repl)
+            decision = self.before_execute(step)
+            if inspect.isawaitable(decision):
+                decision = await decision
+            code, skipped_output, final_outputs = self._apply_before_decision(decision, code, output_field_names)
+            if skipped_output is not None:
+                return self._record_step(pred.reasoning, proposed_code, code, skipped_output, final_outputs, history)
+
         result = self._execute_code(repl, code, input_args)
-        return self._process_execution_result(pred, code, result, history, output_field_names)
+        output, final_outputs = self._interpret_result(result, output_field_names)
+
+        if self.after_execute is not None:
+            step = ExecutedStep(
+                iteration=iteration, reasoning=pred.reasoning, code=code, history=history, repl=repl,
+                result=result, output=output, final_outputs=final_outputs,
+            )
+            decision = self.after_execute(step)
+            if inspect.isawaitable(decision):
+                decision = await decision
+            output, final_outputs = self._apply_after_decision(decision, output, final_outputs, output_field_names)
+
+        return self._record_step(pred.reasoning, proposed_code, code, output, final_outputs, history)
 
     async def aforward(self, *, interpreter_factory: Callable[[], CodeInterpreter] | None = None, **input_args) -> Prediction:
         """Async version of forward(). Execute RLM to produce outputs.

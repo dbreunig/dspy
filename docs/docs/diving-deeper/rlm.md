@@ -98,10 +98,15 @@ A per-invocation factory override, supplied by keyword. For example, `rlm(query=
 **`dspy.SandboxSerializable`**
 The base class for inputs that need custom loading. Implement `sandbox_setup`, `to_sandbox`, `sandbox_assignment`, and `rlm_preview`. It also defines a Pydantic schema hook, so a subclass can be a typed field in a signature, as in `data: DataFrame = dspy.InputField()`.
 
+### Reviewing each step
+
+**`before_execute=...`, `after_execute=...`**
+Two optional hooks, typed in `dspy.predict.rlm_hooks`. RLM passes `before_execute` a `ProposedStep` once the model proposes code; the hook can let it run, run edited code with `Run(code=...)`, skip it with `Reject(feedback)`, or end the run with `Finish(**outputs)`. RLM passes `after_execute` an `ExecutedStep` once the code runs; the hook can add feedback with `Reject`, change what the model sees with `Replace`, or end the run with `Finish`. A rejected `SUBMIT` keeps the loop going, which makes `after_execute` a quality gate on the final answer. Both steps expose the live interpreter as `step.repl`, so a hook can run its own probes between steps. Every reviewed step counts against `max_iters`.
+
 ### Inspecting the trajectory
 
 **`Prediction` fields: your output fields, `trajectory`, `final_reasoning`**
-`forward()` returns a `Prediction` carrying the signature’s output fields plus two debugging fields. `trajectory` is a list of `{reasoning, code, output}` dicts, one per turn. `final_reasoning` is the model’s reasoning on the closing step. Read `trajectory` to see exactly what code ran and why.
+`forward()` returns a `Prediction` carrying the signature’s output fields plus two debugging fields. `trajectory` is a list of `{reasoning, code, output}` dicts, one per turn; a dict also carries `proposed_code` when a `before_execute` hook edited the code. `final_reasoning` is the model’s reasoning on the closing step. Read `trajectory` to see exactly what code ran and why.
 
 **`RLM.tools`**
 A property returning the user-provided tools as a name-to-`Tool` dict, excluding the built-in `llm_query` and `llm_query_batched`. Use it to confirm what the model can call.
