@@ -101,11 +101,15 @@ class REPLVariable(pydantic.BaseModel):
 
 
 class REPLEntry(pydantic.BaseModel):
-    """A single REPL interaction entry containing reasoning, code, and output."""
+    """A single REPL interaction entry containing reasoning, code, and output.
+
+    ``proposed_code`` holds the model's original code when a review hook replaced it; ``code`` holds what ran.
+    """
 
     reasoning: str = ""
     code: str
     output: str
+    proposed_code: str | None = None
 
     model_config = pydantic.ConfigDict(frozen=True)
 
@@ -124,6 +128,8 @@ class REPLEntry(pydantic.BaseModel):
         """Format this entry for inclusion in prompts."""
         reasoning_line = f"Reasoning: {self.reasoning}\n" if self.reasoning else ""
         code_block = f"```python\n{self.code}\n```"
+        if self.proposed_code is not None:
+            code_block += "\nNote: A reviewer edited your code before it ran. The code above is what ran."
         return f"=== Step {index + 1} ===\n{reasoning_line}Code:\n{code_block}\n{self.format_output(self.output, max_output_chars)}"
 
 
@@ -147,9 +153,9 @@ class REPLHistory(pydantic.BaseModel):
     def serialize_model(self) -> str:
         return self.format()
 
-    def append(self, *, reasoning: str = "", code: str, output: str) -> REPLHistory:
+    def append(self, *, reasoning: str = "", code: str, output: str, proposed_code: str | None = None) -> REPLHistory:
         """Return a new REPLHistory with the entry appended."""
-        new_entry = REPLEntry(reasoning=reasoning, code=code, output=output)
+        new_entry = REPLEntry(reasoning=reasoning, code=code, output=output, proposed_code=proposed_code)
         return REPLHistory(entries=list(self.entries) + [new_entry], max_output_chars=self.max_output_chars)
 
     def __len__(self) -> int:

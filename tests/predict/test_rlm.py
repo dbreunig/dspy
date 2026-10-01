@@ -15,6 +15,7 @@ import pytest
 import dspy
 from dspy.adapters.types.tool import Tool
 from dspy.predict.rlm import RLM, _strip_code_fences
+from dspy.predict.rlm_hooks import ExecutedStep, Finish, ProposedStep, Reject, Replace, Run
 from dspy.primitives.code_interpreter import (
     CodeExecutionError,
     CodeInterpreterError,
@@ -1043,6 +1044,279 @@ class TestRLMDynamicSignature:
         assert "summary" in extract_sig.output_fields
         assert "key_facts" in extract_sig.output_fields
         assert "confidence" in extract_sig.output_fields
+
+
+class TestRLMReviewHooks:
+    """Tests for before_execute and after_execute review hooks."""
+
+    def test_before_hook_sees_proposed_step(self):
+        steps = []
+        mock = MockInterpreter(responses=["explored", FinalOutput({"answer": "done"})])
+        rlm = RLM("query -> answer", max_iters=3, before_execute=steps.append)
+        rlm.generate_action = make_mock_predictor([
+            {"reasoning": "Explore", "code": "```python\nprint(1)\n```"},
+            {"reasoning": "Submit", "code": 'SUBMIT("done")'},
+        ])
+
+        result = rlm.forward(query="test", interpreter_factory=lambda: mock)
+
+        assert result.answer == "done"
+        assert [type(step) for step in steps] == [ProposedStep, ProposedStep]
+        assert [step.iteration for step in steps] == [0, 1]
+        assert steps[0].code == "print(1)"
+        assert steps[0].reasoning == "Explore"
+        assert steps[0].repl is mock
+        assert len(steps[0].history) == 0
+        assert len(steps[1].history) == 1
+        assert "proposed_code" not in result.trajectory[0]
+
+    def test_before_hook_edits_code(self):
+        mock = MockInterpreter(responses=["edited ran", FinalOutput({"answer": "done"})])
+
+        def review(step):
+            if step.iteration == 0:
+                return Run(code="print('safe')")
+
+        rlm = RLM("query -> answer", max_iters=3, before_execute=review)
+        rlm.generate_action = make_mock_predictor([
+            {"reasoning": "Explore", "code": "print('unsafe')"},
+            {"reasoning": "Submit", "code": 'SUBMIT("done")'},
+        ])
+
+        result = rlm.forward(query="test", interpreter_factory=lambda: mock)
+
+        assert mock.call_history[0][0] == "print('safe')"
+        assert result.trajectory[0]["code"] == "print('safe')"
+        assert result.trajectory[0]["proposed_code"] == "print('unsafe')"
+        assert result.trajectory[0]["output"] == "edited ran"
+
+    def test_edited_code_is_noted_in_history_prompt(self):
+        history = REPLHistory().append(code="print('safe')", output="ok", proposed_code="print('unsafe')")
+        formatted = history.format()
+        assert "print('safe')" in formatted
+        assert "print('unsafe')" not in formatted
+        assert "A reviewer edited your code before it ran" in formatted
+
+    def test_before_hook_rejects_code(self):
+        mock = MockInterpreter(responses=[FinalOutput({"answer": "done"})])
+
+        def review(step):
+            if "subprocess" in step.code:
+                return Reject("Use the provided tools.")
+
+        rlm = RLM("query -> answer", max_iters=3, before_execute=review)
+        rlm.generate_action = make_mock_predictor([
+            {"reasoning": "Shell out", "code": "import subprocess"},
+            {"reasoning": "Submit", "code": 'SUBMIT("done")'},
+        ])
+
+        result = rlm.forward(query="test", interpreter_factory=lambda: mock)
+
+        assert result.answer == "done"
+        assert [code for code, _ in mock.call_history] == ['SUBMIT("done")']
+        assert result.trajectory[0]["code"] == "import subprocess"
+        assert "not executed" in result.trajectory[0]["output"]
+        assert "Use the provided tools." in result.trajectory[0]["output"]
+
+    def test_rejections_count_against_max_iters(self):
+        mock = MockInterpreter()
+        rlm = RLM("query -> answer", max_iters=2, before_execute=lambda step: Reject("no"))
+        rlm.generate_action = make_mock_predictor([{"reasoning": "Try", "code": "print(1)"}])
+        rlm.extract = make_mock_predictor([{"answer": "extracted"}])
+
+        result = rlm.forward(query="test", interpreter_factory=lambda: mock)
+
+        assert result.answer == "extracted"
+        assert mock.call_count == 0
+
+    def test_before_hook_finishes_run(self):
+        mock = MockInterpreter()
+        rlm = RLM("query -> answer: int", max_iters=3, before_execute=lambda step: Finish(answer="7"))
+        rlm.generate_action = make_mock_predictor([{"reasoning": "Explore", "code": "print(1)"}])
+
+        result = rlm.forward(query="test", interpreter_factory=lambda: mock)
+
+        assert result.answer == 7
+        assert mock.call_count == 0
+        assert len(result.trajectory) == 1
+
+    def test_finish_with_missing_outputs_raises(self):
+        mock = MockInterpreter()
+        rlm = RLM("query -> answer, score: int", max_iters=3, before_execute=lambda step: Finish(answer="x"))
+        rlm.generate_action = make_mock_predictor([{"reasoning": "Explore", "code": "print(1)"}])
+
+        with pytest.raises(ValueError, match="Finish outputs are invalid"):
+            rlm.forward(query="test", interpreter_factory=lambda: mock)
+
+    def test_after_hook_sees_executed_step(self):
+        steps = []
+        mock = MockInterpreter(responses=["hello", FinalOutput({"answer": "done"})])
+        rlm = RLM("query -> answer", max_iters=3, after_execute=steps.append)
+        rlm.generate_action = make_mock_predictor([
+            {"reasoning": "Explore", "code": "print('hello')"},
+            {"reasoning": "Submit", "code": 'SUBMIT("done")'},
+        ])
+
+        rlm.forward(query="test", interpreter_factory=lambda: mock)
+
+        assert [type(step) for step in steps] == [ExecutedStep, ExecutedStep]
+        assert steps[0].result == "hello"
+        assert steps[0].output == "hello"
+        assert steps[0].final_outputs is None
+        assert steps[1].final_outputs == {"answer": "done"}
+
+    def test_after_hook_replaces_output(self):
+        mock = MockInterpreter(responses=["secret token", FinalOutput({"answer": "done"})])
+
+        def check(step):
+            if "secret" in step.output:
+                return Replace("[redacted]")
+
+        rlm = RLM("query -> answer", max_iters=3, after_execute=check)
+        rlm.generate_action = make_mock_predictor([
+            {"reasoning": "Explore", "code": "print(token)"},
+            {"reasoning": "Submit", "code": 'SUBMIT("done")'},
+        ])
+
+        result = rlm.forward(query="test", interpreter_factory=lambda: mock)
+
+        assert result.trajectory[0]["output"] == "[redacted]"
+
+    def test_after_hook_adds_feedback_to_output(self):
+        mock = MockInterpreter(responses=["0 matches", FinalOutput({"answer": "done"})])
+
+        def check(step):
+            if step.output.startswith("0 matches"):
+                return Reject("Try a case-insensitive search.")
+
+        rlm = RLM("query -> answer", max_iters=3, after_execute=check)
+        rlm.generate_action = make_mock_predictor([
+            {"reasoning": "Search", "code": "print(search())"},
+            {"reasoning": "Submit", "code": 'SUBMIT("done")'},
+        ])
+
+        result = rlm.forward(query="test", interpreter_factory=lambda: mock)
+
+        output = result.trajectory[0]["output"]
+        assert output.startswith("0 matches")
+        assert output.endswith("[Reviewer feedback] Try a case-insensitive search.")
+
+    def test_after_hook_rejects_submit(self):
+        mock = MockInterpreter(responses=[FinalOutput({"answer": "wrong"}), FinalOutput({"answer": "right"})])
+
+        def check(step):
+            if step.final_outputs == {"answer": "wrong"}:
+                return Reject("That contradicts chunk 3.")
+
+        rlm = RLM("query -> answer", max_iters=3, after_execute=check)
+        rlm.generate_action = make_mock_predictor([
+            {"reasoning": "Guess", "code": 'SUBMIT("wrong")'},
+            {"reasoning": "Fix", "code": 'SUBMIT("right")'},
+        ])
+
+        result = rlm.forward(query="test", interpreter_factory=lambda: mock)
+
+        assert result.answer == "right"
+        assert result.trajectory[0]["output"] == "[Reviewer feedback] Your SUBMIT was rejected. That contradicts chunk 3."
+
+    def test_after_hook_finishes_run(self):
+        mock = MockInterpreter(responses=["found it"])
+        rlm = RLM("query -> answer", max_iters=3, after_execute=lambda step: Finish(answer=step.output))
+        rlm.generate_action = make_mock_predictor([{"reasoning": "Explore", "code": "print(x)"}])
+
+        result = rlm.forward(query="test", interpreter_factory=lambda: mock)
+
+        assert result.answer == "found it"
+        assert result.trajectory[0]["output"] == "found it"
+
+    def test_hook_can_run_code_in_sandbox(self):
+        mock = MockInterpreter(responses=["model output", "probe output", FinalOutput({"answer": "done"})])
+        probes = []
+        rlm = RLM(
+            "query -> answer",
+            max_iters=3,
+            after_execute=lambda step: probes.append(step.repl.execute("print(len(results))")) if step.iteration == 0 else None,
+        )
+        rlm.generate_action = make_mock_predictor([
+            {"reasoning": "Explore", "code": "results = [1]"},
+            {"reasoning": "Submit", "code": 'SUBMIT("done")'},
+        ])
+
+        result = rlm.forward(query="test", interpreter_factory=lambda: mock)
+
+        assert result.answer == "done"
+        assert probes == ["probe output"]
+
+    @pytest.mark.parametrize(
+        ("hook_name", "decision"),
+        [("before_execute", Replace("x")), ("after_execute", Run()), ("before_execute", "approve")],
+    )
+    def test_invalid_decision_raises(self, hook_name, decision):
+        mock = MockInterpreter(responses=["ok"])
+        rlm = RLM("query -> answer", max_iters=3, **{hook_name: lambda step: decision})
+        rlm.generate_action = make_mock_predictor([{"reasoning": "Explore", "code": "print(1)"}])
+
+        with pytest.raises(TypeError, match=f"{hook_name} must return None"):
+            rlm.forward(query="test", interpreter_factory=lambda: mock)
+
+    def test_sync_forward_rejects_async_hook(self):
+        async def review(step):
+            return None
+
+        mock = MockInterpreter(responses=["ok"])
+        rlm = RLM("query -> answer", max_iters=3, before_execute=review)
+        rlm.generate_action = make_mock_predictor([{"reasoning": "Explore", "code": "print(1)"}])
+
+        with pytest.raises(TypeError, match="use aforward"):
+            rlm.forward(query="test", interpreter_factory=lambda: mock)
+
+    def test_fence_syntax_error_skips_hooks(self):
+        calls = []
+        mock = MockInterpreter(responses=[FinalOutput({"answer": "done"})])
+        rlm = RLM("query -> answer", max_iters=3, before_execute=calls.append, after_execute=calls.append)
+        rlm.generate_action = make_mock_predictor([
+            {"reasoning": "Wrong language", "code": "```bash\nls\n```"},
+            {"reasoning": "Submit", "code": 'SUBMIT("done")'},
+        ])
+
+        result = rlm.forward(query="test", interpreter_factory=lambda: mock)
+
+        assert result.answer == "done"
+        assert [step.iteration for step in calls] == [1, 1]
+
+    @pytest.mark.asyncio
+    async def test_aforward_awaits_async_hooks(self):
+        mock = MockInterpreter(responses=["raw", FinalOutput({"answer": "done"})])
+
+        async def review(step):
+            return Run(code=step.code + "  # reviewed")
+
+        async def check(step):
+            if step.final_outputs is None:
+                return Replace("checked")
+
+        rlm = RLM("query -> answer", max_iters=3, before_execute=review, after_execute=check)
+        rlm.generate_action = make_mock_predictor([
+            {"reasoning": "Explore", "code": "print(1)"},
+            {"reasoning": "Submit", "code": 'SUBMIT("done")'},
+        ], async_mode=True)
+
+        result = await rlm.aforward(query="test", interpreter_factory=lambda: mock)
+
+        assert result.answer == "done"
+        assert mock.call_history[0][0] == "print(1)  # reviewed"
+        assert result.trajectory[0]["proposed_code"] == "print(1)"
+        assert result.trajectory[0]["output"] == "checked"
+
+    @pytest.mark.asyncio
+    async def test_aforward_accepts_sync_hooks(self):
+        mock = MockInterpreter()
+        rlm = RLM("query -> answer", max_iters=3, before_execute=lambda step: Finish(answer="early"))
+        rlm.generate_action = make_mock_predictor([{"reasoning": "Explore", "code": "print(1)"}], async_mode=True)
+
+        result = await rlm.aforward(query="test", interpreter_factory=lambda: mock)
+
+        assert result.answer == "early"
 
 
 # ============================================================================

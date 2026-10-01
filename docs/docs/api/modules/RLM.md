@@ -112,6 +112,8 @@ $20,000,000
 | `tools` | `list[Union[Callable, dspy.Tool]]` | `None` | Additional tool functions callable from interpreter code |
 | `sub_lm` | `dspy.LM` | `None` | LM for sub-queries. Defaults to `dspy.settings.lm`. Use a cheaper model here. |
 | `interpreter_factory` | `Callable[[], CodeInterpreter]` | `PythonInterpreter` | Creates one interpreter per invocation. RLM shuts down each returned interpreter. `dspy.configure(interpreter_factory=...)` replaces the default. A factory passed to the constructor wins, unless it is `PythonInterpreter`. May expose an optional `execution_instructions` string for the action prompt. |
+| `before_execute` | `Callable[[ProposedStep], ...]` | `None` | Hook that reviews each proposed code block before it runs. See [Reviewing Steps](#reviewing-steps). |
+| `after_execute` | `Callable[[ExecutedStep], ...]` | `None` | Hook that reviews each step after it runs. See [Reviewing Steps](#reviewing-steps). |
 
 ## Built-in Tools
 
@@ -258,6 +260,40 @@ async def process():
 answer = asyncio.run(process())
 ```
 
+### Reviewing Steps
+
+Two hooks let you review each step. RLM calls `before_execute` after the model proposes code and before the code runs. It calls `after_execute` after the code runs and before the model sees the output. Each hook receives a step and returns a decision, or `None` to let the step proceed unchanged.
+
+```python
+from dspy.predict.rlm_hooks import Finish, Reject, Replace, Run
+
+def review(step):  # step is a ProposedStep
+    if "subprocess" in step.code:
+        return Reject("Don't shell out; use the provided tools.")
+    if "print(context)" in step.code:
+        return Run(code=step.code.replace("print(context)", "print(context[:2000])"))
+
+def check(step):  # step is an ExecutedStep
+    if "API_KEY" in step.output:
+        return Replace("[output redacted]")
+    if step.final_outputs is not None and not step.final_outputs["answer"]:
+        return Reject("The answer is empty. Look again before you SUBMIT.")
+
+rlm = dspy.RLM("context, query -> answer", before_execute=review, after_execute=check)
+```
+
+| Decision | `before_execute` | `after_execute` |
+|----------|------------------|-----------------|
+| `None` | Run the proposed code | Keep the result |
+| `Run(code=None)` | Run the proposed code, or run `code` in its place | — |
+| `Reject(feedback)` | Skip the code; the model sees `feedback` | The model sees the output followed by `feedback`. A rejected `SUBMIT` doesn't end the run. |
+| `Replace(output)` | — | The model sees `output` in place of the real output; the run continues |
+| `Finish(**outputs)` | End the run with `outputs`; the code doesn't run | End the run with `outputs` |
+
+Both step types carry `iteration` (zero-based), `reasoning`, `code`, `history`, and `repl`, the live interpreter. A hook can run its own code through `step.repl.execute(...)`; that code shares the model's namespace and can change its state. `ExecutedStep` adds `result` (the raw interpreter result), `output` (the text the model will see), and `final_outputs` (the parsed outputs after a valid `SUBMIT`, else `None`).
+
+When `before_execute` edits code, the history shows the model the code that ran, with a note that a reviewer edited it. The trajectory entry keeps the model's original code under `proposed_code`. Rejected and replaced steps count against `max_iters`. `aforward()` and `acall()` accept async hooks; `forward()` raises a `TypeError` if a hook returns an awaitable. Code with a non-Python fence never reaches the interpreter, so neither hook sees it.
+
 ### Inspecting the Trajectory
 
 ```python
@@ -274,7 +310,7 @@ for step in result.trajectory:
 RLM returns a `Prediction` with:
 
 - **Output fields** from your signature (e.g., `result.answer`)
-- **`trajectory`**: List of dicts with `reasoning`, `code`, `output` for each step
+- **`trajectory`**: List of dicts with `reasoning`, `code`, `output` for each step, plus `proposed_code` when a `before_execute` hook edited the code
 - **`final_reasoning`**: The LLM's reasoning on the final step
 
 ## Notes
