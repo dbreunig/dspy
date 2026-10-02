@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 
 import dspy
@@ -78,3 +80,25 @@ def test_refine_module_custom_fail_count():
     assert module_call_count[0] == 2, (
         "Module should have been called exactly 2 times, but was called %d times" % module_call_count[0]
     )
+
+
+def test_refine_offer_feedback_inputs_match_declared_types(caplog, monkeypatch):
+    # Refine JSON-stringifies every non-str value before calling `OfferFeedback`, so the signature's
+    # input types must be `str` or Predict logs a spurious type-mismatch warning on every advice call.
+    lm = DummyLM(
+        [
+            {"reasoning": "r0", "answer": "bad"},
+            {"discussion": "d", "advice": {"predict": "do better"}},
+            {"reasoning": "r1", "answer": "good"},
+        ]
+    )
+    dspy.configure(lm=lm, warn_on_type_mismatch=True)
+    # dspy installs its own handler with propagate=False; re-enable propagation so caplog can see the logs.
+    monkeypatch.setattr(logging.getLogger("dspy"), "propagate", True)
+    qa = dspy.ChainOfThought("question -> answer")
+    refine = Refine(module=qa, N=2, reward_fn=lambda kwargs, pred: 0.0, threshold=2.0)
+
+    with caplog.at_level(logging.WARNING, logger="dspy.predict.predict"):
+        refine(question="What is 1+1?")
+
+    assert "Type mismatch" not in caplog.text
