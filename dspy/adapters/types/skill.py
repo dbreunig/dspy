@@ -35,9 +35,9 @@ with warnings.catch_warnings():
         optional `scripts/`, `references/`, and `assets/` directories of bundled resources. A skill can
         also be loaded from a single markdown or text file, or from an inline string.
 
-        As a signature input, a skill renders as one `<skill>` block holding its full content. As an
-        output, a model fills `name`, `description`, and `content`, and `save()` writes the result as a
-        skill directory. Inside `dspy.RLM`, a skill is injected as a sandbox variable: the model sees
+        As a signature input, a skill renders as its `SKILL.md` document: the frontmatter followed by
+        the full content. As an output, a model fills `name`, `description`, and `content`, and `save()`
+        writes the result as a skill directory. Inside `dspy.RLM`, a skill is injected as a sandbox variable: the model sees
         its name, description, and resource list up front and reads `.content` or a bundled resource
         from `.resources` only when it decides to.
 
@@ -169,15 +169,8 @@ with warnings.catch_warnings():
             if skill_md.exists() and not overwrite:
                 raise FileExistsError(f"{skill_md} already exists; pass overwrite=True to replace it.")
 
-            lines = ["---", f"name: {self.name}"]
-            if self.description:
-                lines.append(f"description: {json.dumps(self.description, ensure_ascii=False)}")
-            for key, value in self.frontmatter.items():
-                lines.append(f"{key}: {json.dumps(value, ensure_ascii=False)}")
-            lines += ["---", "", self.content.strip(), ""]
-
             skill_dir.mkdir(parents=True, exist_ok=True)
-            skill_md.write_text("\n".join(lines), encoding="utf-8")
+            skill_md.write_text(self.format() + "\n", encoding="utf-8")
             return skill_md
 
         # -- Resources ----------------------------------------------------------------
@@ -225,11 +218,17 @@ with warnings.catch_warnings():
             return text
 
         def format(self) -> str:
-            """Render the skill as one `<skill>` block holding its full content."""
-            attrs = f"name={self.name!r}"
+            """Render the skill as its `SKILL.md` document: frontmatter, a blank line, then the content.
+
+            This is the text `save()` writes, so a rendered skill loads back as an equal skill.
+            """
+            lines = ["---", f"name: {self.name}"]
             if self.description:
-                attrs += f" description={self.description!r}"
-            return f"<skill {attrs}>\n{self.content.strip()}\n</skill>"
+                lines.append(f"description: {json.dumps(self.description, ensure_ascii=False)}")
+            for key, value in self.frontmatter.items():
+                lines.append(f"{key}: {json.dumps(value, ensure_ascii=False)}")
+            lines += ["---", "", self.content.strip()]
+            return "\n".join(lines)
 
         def __str__(self) -> str:
             return self.format()

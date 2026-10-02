@@ -170,35 +170,44 @@ def test_validate_name_accepts_spec_names():
 
 def test_format_summary_and_str(skill_dir: Path):
     skill = dspy.Skill.load(skill_dir)
-    block = (
-        "<skill name='prompt-engineering' description='How to write clear instructions'>\n"
-        "# Prompt engineering\n\nBe explicit about the output format.\n</skill>"
+    document = (
+        '---\nname: prompt-engineering\ndescription: "How to write clear instructions"\n'
+        'license: "MIT"\nversion: "2"\n---\n\n# Prompt engineering\n\nBe explicit about the output format.'
     )
-    assert skill.format() == block
-    assert str(skill) == block
+    assert skill.format() == document
+    assert str(skill) == document
     assert skill.summary() == f"prompt-engineering: How to write clear instructions ({skill_dir / 'SKILL.md'})"
 
+    # The rendered form is the saved form, so it loads back as the same skill.
+    rendered_dir = skill_dir.parent / "rendered" / "prompt-engineering"
+    rendered_dir.mkdir(parents=True)
+    (rendered_dir / "SKILL.md").write_text(skill.format(), encoding="utf-8")
+    reloaded = dspy.Skill.load(rendered_dir)
+    assert (reloaded.name, reloaded.description, reloaded.content, reloaded.frontmatter) == (
+        skill.name,
+        skill.description,
+        skill.content,
+        skill.frontmatter,
+    )
+
     inline = dspy.Skill.load("Be terse.")
-    assert inline.format() == "<skill name='Be terse.'>\nBe terse.\n</skill>"
+    assert inline.format() == "---\nname: Be terse.\n---\n\nBe terse."
     assert inline.summary() == "Be terse."
 
 
-def test_skill_as_a_signature_input_renders_its_block():
+def test_skill_as_a_signature_input_renders_its_document():
     class Sig(dspy.Signature):
         skill: dspy.Skill = dspy.InputField()
-        skills: list[dspy.Skill] = dspy.InputField()
         question: str = dspy.InputField()
         answer: str = dspy.OutputField()
 
     lm = DummyLM([{"answer": "ok"}])
     skill = dspy.Skill(name="be-terse", content="Be terse.", description="Short answers")
     with dspy.context(lm=lm):
-        assert dspy.Predict(Sig)(skill=skill, skills=[skill], question="hi").answer == "ok"
+        assert dspy.Predict(Sig)(skill=skill, question="hi").answer == "ok"
 
     user = lm.history[-1]["messages"][1]["content"]
-    assert "[[ ## skill ## ]]\n<skill name='be-terse' description='Short answers'>\nBe terse.\n</skill>\n\n" in user
-    assert "[[ ## skills ## ]]\n" in user
-    assert user.count("<skill name='be-terse'") == 2
+    assert '[[ ## skill ## ]]\n---\nname: be-terse\ndescription: "Short answers"\n---\n\nBe terse.\n\n' in user
     assert "CUSTOM-TYPE" not in user
 
 
