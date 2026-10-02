@@ -18,6 +18,7 @@ API_MAPPING = {
         dspy.Image,
         dspy.History,
         dspy.Prediction,
+        dspy.Skill,
         dspy.Tool,
         dspy.ToolCalls,
     ],
