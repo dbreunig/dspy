@@ -80,7 +80,7 @@ def bootstrap_trace_data(
                         found_pred = pred
                         break
                 if found_pred is None:
-                    raise ValueError(f"Failed to find the predictor for the failed signature: {failed_signature}")
+                    raise ValueError(f"Failed to find the predictor for the failed signature: {failed_signature}") from e
 
                 trace = dspy.settings.trace.copy()
                 # Trace is Tuple[signature, inputs, prediction outputs]
