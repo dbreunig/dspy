@@ -1,5 +1,6 @@
 import ast
 import enum
+import functools
 import inspect
 import json
 import types
@@ -75,9 +76,21 @@ def serialize_for_json(value: Any) -> Any:
     # a string representation of the value if that fails (e.g. if the value contains an object
     # that pydantic doesn't recognize or can't serialize)
     try:
-        return TypeAdapter(type(value)).dump_python(value, mode="json")
+        return _type_adapter_for(type(value)).dump_python(value, mode="json")
     except Exception:
         return str(value)
+
+
+@functools.lru_cache(maxsize=256)
+def _type_adapter_for(value_type: type) -> TypeAdapter:
+    """Build a ``TypeAdapter`` for ``value_type``, reusing one per type.
+
+    Constructing a ``TypeAdapter`` builds a pydantic core schema, which costs tens of
+    microseconds and ran once per field, per demo, per call. The adapter depends only on
+    the type, so one per type serves every value of that type. The cache is bounded so
+    dynamically created model classes do not accumulate for the life of the process.
+    """
+    return TypeAdapter(value_type)
 
 
 def format_field_value(field_info: FieldInfo, value: Any, assume_text=True) -> str | dict:
