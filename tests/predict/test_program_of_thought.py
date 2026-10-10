@@ -144,7 +144,7 @@ def test_pot_evaluate_creates_one_interpreter_per_example():
     assert result.score == 100.0
     assert len(factory.instances) == 4
     assert len({id(interpreter) for interpreter in factory.instances}) == 4
-    assert all(interpreter.deno_process is None for interpreter in factory.instances)
+    assert all(interpreter.node_process is None for interpreter in factory.instances)
 
 
 def test_pot_factory_creates_fresh_interpreter_per_sequential_call():

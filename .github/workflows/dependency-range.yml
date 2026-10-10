@@ -57,7 +57,7 @@ jobs:
           RESOLUTION: ${{ matrix.resolution }}
         run: |
           uv pip compile pyproject.toml \
-            --extra deno \
+            --extra node \
             --extra dev \
             --extra test_extras \
             --resolution "$RESOLUTION" \
@@ -79,7 +79,7 @@ jobs:
           uv pip check --python .venv/bin/python
           uv pip list --python .venv/bin/python
           uv run --frozen --no-sync --python .venv/bin/python python -c \
-            'import deno, subprocess; subprocess.run([deno.find_deno_bin(), "--version"], check=True)'
+            'from nodejs_wheel import node; node(["--version"], check=True)'
 
       - name: Run non-live tests
         env:

@@ -122,7 +122,7 @@ class RLM(Module):
     through code execution. The LLM writes Python code to examine data, call
     sub-LLMs for semantic analysis, and build up answers iteratively.
 
-    ``interpreter_factory`` defaults to ``PythonInterpreter`` (Deno/Pyodide/WASM), and
+    ``interpreter_factory`` defaults to ``PythonInterpreter`` (Node.js/Pyodide/WASM), and
     ``dspy.configure(interpreter_factory=...)`` replaces that default. Either route
     accepts an adapter for a remote sandbox.
     RLM updates the interpreter's mutable ``tools`` dictionary with

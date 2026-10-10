@@ -128,8 +128,8 @@ jobs:
           echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
       - name: Install dependencies
         run: |
-          uv sync -p .venv --extra deno --extra dev --extra test_extras
-          uv run -p .venv python -c 'import deno, subprocess; subprocess.run([deno.find_deno_bin(), "--version"], check=True)'
+          uv sync -p .venv --extra node --extra dev --extra test_extras
+          uv run -p .venv python -c 'from nodejs_wheel import node; node(["--version"], check=True)'
       - name: Run extra and deno tests
         run: uv run -p .venv pytest tests/ -m 'extra or deno' --extra --deno -n auto --dist worksteal
 

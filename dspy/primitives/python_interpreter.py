@@ -1,14 +1,15 @@
 """
-Local interpreter for secure Python code execution using Deno/Pyodide.
+Local interpreter for secure Python code execution using Node.js/Pyodide.
 
 This module provides PythonInterpreter, which runs Python code in a sandboxed
-WASM environment using Deno and Pyodide. It implements the Interpreter
+WASM environment using Node.js and Pyodide. It implements the Interpreter
 protocol defined in interpreter.py.
 """
 
 import asyncio
+import base64
 import dataclasses
-import functools
+import hashlib
 import inspect
 import json
 import keyword
@@ -19,7 +20,10 @@ import re
 import secrets
 import shutil
 import subprocess
+import tarfile
+import tempfile
 import threading
+import urllib.request
 from os import PathLike
 from typing import Any, Callable, NoReturn
 
@@ -36,9 +40,17 @@ logger = logging.getLogger(__name__)
 # Pyodide's FFI crashes at exactly 128MB (134,217,728 bytes). Use filesystem
 # injection for strings above 100MB to stay safely below this limit.
 LARGE_VAR_THRESHOLD = 100 * 1024 * 1024
-MIN_DENO_VERSION = (2, 0, 0)
-MAX_DENO_VERSION = (3, 0, 0)
-DENO_PROBE_TIMEOUT_SECONDS = 10
+# Pyodide's run_sync needs WebAssembly JSPI, which Node 24 ships behind a flag
+# and Node 25 enables by default. Node 25 also adds --allow-net; Node 24 relies
+# on the runner withholding network globals from sandboxed code.
+MIN_NODE_VERSION = (24, 0, 0)
+NODE_DEFAULT_JSPI_VERSION = (25, 0, 0)
+NODE_NET_PERMISSION_VERSION = (25, 0, 0)
+NODE_PROBE_TIMEOUT_SECONDS = 10
+
+PYODIDE_VERSION = "0.29.4"
+PYODIDE_TARBALL_URL = f"https://registry.npmjs.org/pyodide/-/pyodide-{PYODIDE_VERSION}.tgz"
+PYODIDE_INTEGRITY = "sha512-tCseTsqU3kSxZIjkue5zXxTMNEwrKZwOIIEQRBA/VzHxFN1hoCxe4w41phfCdHd9it9RcCNQb5K/Re0InqMgvA=="
 
 # =============================================================================
 # JSON-RPC 2.0 Helpers
@@ -67,11 +79,11 @@ JSONRPC_APP_ERRORS = {
 
 
 def _canonicalize_path(path: PathLike | str) -> str:
-    """Resolve symlinks so the path matches what Deno's permission check sees.
+    """Resolve symlinks so the path matches what Node's permission check sees.
 
-    Deno does string-prefix matching against the realpath of the accessed file
-    (denoland/deno#9607), so --allow-read / --allow-write entries must be
-    realpath'd or reads through a symlink (including DENO_DIR) are denied.
+    Node follows symlinks before checking --allow-fs-read / --allow-fs-write
+    grants, so grant entries must be realpath'd or reads through a symlink
+    are denied.
     """
     return os.path.realpath(os.path.expanduser(os.fspath(path)))
 
@@ -81,35 +93,38 @@ def _paths_overlap(first: str, second: str) -> bool:
     return first == second or first.startswith(second + os.sep) or second.startswith(first + os.sep)
 
 
-def _find_deno_executable() -> str:
-    """Prefer the Deno binary managed by the optional Python package."""
+def _find_node_executable() -> str:
+    """Prefer the Node binary managed by the optional nodejs-wheel package."""
     try:
-        from deno import find_deno_bin
+        import nodejs_wheel
     except ImportError:
-        return shutil.which("deno") or "deno"
+        return shutil.which("node") or "node"
 
-    try:
-        return find_deno_bin()
-    except FileNotFoundError:
-        return shutil.which("deno") or "deno"
-
-
-def _deno_subprocess_env() -> dict[str, str]:
-    """Build an environment that prevents ambient package.json discovery."""
-    env = os.environ.copy()
-    env["DENO_NO_PACKAGE_JSON"] = "1"
-    return env
+    root = os.path.dirname(nodejs_wheel.__file__)
+    managed = os.path.join(root, "node.exe") if os.name == "nt" else os.path.join(root, "bin", "node")
+    return managed if os.path.exists(managed) else shutil.which("node") or "node"
 
 
-def _get_deno_version(deno_executable: str) -> tuple[int, int, int] | None:
+def _node_subprocess_env(env_vars: list[str]) -> dict[str, str]:
+    """Build a minimal environment for the sandbox process.
+
+    Node's permission model does not restrict environment access, so the
+    process only receives the variables the caller allowed. Dropping the rest
+    also discards NODE_OPTIONS and other variables that change Node's startup.
+    """
+    keep = {"SYSTEMROOT"} if os.name == "nt" else set()
+    return {key: value for key, value in os.environ.items() if key in keep or key in env_vars}
+
+
+def _get_node_version(node_executable: str) -> tuple[int, int, int] | None:
     try:
         result = subprocess.run(
-            [deno_executable, "--version"],
+            [node_executable, "--version"],
             capture_output=True,
             text=True,
             check=False,
-            env=_deno_subprocess_env(),
-            timeout=DENO_PROBE_TIMEOUT_SECONDS,
+            env=_node_subprocess_env([]),
+            timeout=NODE_PROBE_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -117,25 +132,72 @@ def _get_deno_version(deno_executable: str) -> tuple[int, int, int] | None:
     if result.returncode != 0:
         return None
 
-    match = re.match(r"deno (\d+)\.(\d+)\.(\d+)", result.stdout)
+    match = re.match(r"v(\d+)\.(\d+)\.(\d+)", result.stdout)
     return tuple(map(int, match.groups())) if match else None
 
 
-def _validate_deno_version(deno_executable: str) -> None:
-    version = _get_deno_version(deno_executable)
+def _validate_node_version(node_executable: str) -> tuple[int, int, int]:
+    version = _get_node_version(node_executable)
     if version is None:
         raise CodeInterpreterError(
-            f"Unable to determine the Deno version from {deno_executable!r}. "
-            "PythonInterpreter requires Deno >=2.0.0,<3.0.0. "
-            'Install a compatible runtime with `pip install "dspy[deno]"`, or pass a custom `deno_command`.'
+            f"Unable to determine the Node.js version from {node_executable!r}. "
+            "PythonInterpreter requires Node.js >=24.0.0. "
+            'Install a compatible runtime with `pip install "dspy[node]"`, or pass a custom `node_command`.'
         )
 
-    if not (MIN_DENO_VERSION <= version < MAX_DENO_VERSION):
+    if version < MIN_NODE_VERSION:
         version_text = ".".join(map(str, version))
         raise CodeInterpreterError(
-            f"Unsupported Deno version {version_text}. PythonInterpreter supports Deno >=2.0.0,<3.0.0. "
-            'Install a compatible runtime with `pip install "dspy[deno]"`, or pass a custom `deno_command`.'
+            f"Unsupported Node.js version {version_text}. PythonInterpreter requires Node.js >=24.0.0. "
+            'Install a compatible runtime with `pip install "dspy[node]"`, or pass a custom `node_command`.'
         )
+    return version
+
+
+def _pyodide_dir() -> str:
+    explicit = os.environ.get("DSPY_PYODIDE_DIR")
+    if explicit:
+        return explicit
+    from dspy.utils.caching import DSPY_CACHEDIR
+
+    return os.path.join(DSPY_CACHEDIR, "pyodide", PYODIDE_VERSION)
+
+
+def _ensure_pyodide() -> str:
+    """Return a local Pyodide distribution, downloading the pinned npm release on first use."""
+    target = _canonicalize_path(_pyodide_dir())
+    if os.path.exists(os.path.join(target, "pyodide.mjs")):
+        return target
+
+    algorithm, expected = PYODIDE_INTEGRITY.split("-", 1)
+    try:
+        with urllib.request.urlopen(PYODIDE_TARBALL_URL, timeout=60) as response:
+            payload = response.read()
+    except OSError as e:
+        raise CodeInterpreterError(
+            f"Unable to download Pyodide {PYODIDE_VERSION} from {PYODIDE_TARBALL_URL}. "
+            "Set DSPY_PYODIDE_DIR to an unpacked copy of the pyodide npm package to run offline."
+        ) from e
+    if base64.b64encode(hashlib.new(algorithm, payload).digest()).decode() != expected:
+        raise CodeInterpreterError(f"Pyodide {PYODIDE_VERSION} download failed its integrity check.")
+
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=os.path.dirname(target)) as staging:
+        tarball = os.path.join(staging, "pyodide.tgz")
+        with open(tarball, "wb") as f:
+            f.write(payload)
+        with tarfile.open(tarball) as archive:
+            if hasattr(tarfile, "data_filter"):
+                archive.extractall(staging, filter="data")
+            else:
+                archive.extractall(staging)
+        try:
+            os.rename(os.path.join(staging, "package"), target)
+        except OSError:
+            # Another process finished the same download first.
+            if not os.path.exists(os.path.join(target, "pyodide.mjs")):
+                raise
+    return target
 
 
 def _jsonrpc_request(method: str, params: dict, id: int | str) -> str:
@@ -215,15 +277,16 @@ def _make_jsonable(value: Any) -> Any:
 
 
 class PythonInterpreter:
-    """Local interpreter for secure Python execution using Deno and Pyodide.
+    """Local interpreter for secure Python execution using Node.js and Pyodide.
 
     Implements the Interpreter protocol for secure code execution in a
     WASM-based sandbox. Code runs in an isolated Pyodide environment with
     no access to the host filesystem, network, or environment by default.
 
     Prerequisites:
-        Install the managed Deno runtime with ``pip install "dspy[deno]"``, or
-        install a compatible Deno 2.x release system-wide.
+        Install the managed Node.js runtime with ``pip install "dspy[node]"``, or
+        install Node.js 24 or newer system-wide. The first interpreter
+        downloads the pinned Pyodide release into the DSPy cache directory.
 
     Examples:
         ```python
@@ -242,7 +305,7 @@ class PythonInterpreter:
 
     def __init__(
         self,
-        deno_command: list[str] | None = None,
+        node_command: list[str] | None = None,
         enable_read_paths: list[PathLike | str] | None = None,
         enable_write_paths: list[PathLike | str] | None = None,
         enable_env_vars: list[str] | None = None,
@@ -251,10 +314,11 @@ class PythonInterpreter:
         tools: dict[str, Callable[..., str]] | None = None,
         output_fields: list[dict] | None = None,
         callbacks: list[BaseCallback] | None = None,
+        deno_command: list[str] | None = None,
     ) -> None:
         """
         Args:
-            deno_command: command list to launch Deno.
+            node_command: command list to launch Node.js with a runner script.
             enable_read_paths: Files or directories to allow reading from in the sandbox.
             enable_write_paths: Files or directories to allow writing to in the sandbox.
                 All write paths will also be able to be read from for mounting.
@@ -267,9 +331,12 @@ class PythonInterpreter:
             output_fields: List of output field definitions for typed SUBMIT signature.
                    Each dict should have 'name' and optionally 'type' keys.
             callbacks: Optional instance-level callback handlers.
+            deno_command: Removed. PythonInterpreter now runs on Node.js; use ``node_command``.
         """
-        if isinstance(deno_command, dict):
-            raise TypeError("deno_command must be a list of strings, not a dict")
+        if deno_command is not None:
+            raise TypeError("PythonInterpreter no longer runs on Deno; pass `node_command` instead of `deno_command`.")
+        if isinstance(node_command, dict):
+            raise TypeError("node_command must be a list of strings, not a dict")
 
         self.enable_read_paths = enable_read_paths or []
         self.enable_write_paths = enable_write_paths or []
@@ -288,54 +355,20 @@ class PythonInterpreter:
         self.output_fields = output_fields
         self.callbacks = list(callbacks or [])
         self._tools_registered = False
-        # TODO later on add enable_run (--allow-run) by proxying subprocess.run through Deno.run() to fix 'emscripten does not support processes' error
 
-        self._uses_default_deno_command = not deno_command
-        if deno_command:
-            self.deno_command = list(deno_command)
+        self._uses_default_node_command = not node_command
+        if node_command:
+            self.node_command = list(node_command)
         else:
-            deno_executable = _find_deno_executable()
-            args = [
-                deno_executable,
-                "run",
-                "--no-config",
-                "--no-lock",
-                "--node-modules-dir=false",
-            ]
-
-            # Also allow reading Deno's cache directory so Pyodide can load its files
-            deno_dir = self._get_deno_dir(deno_executable)
-            protected = [_canonicalize_path(self._get_runner_path()), *([_canonicalize_path(deno_dir)] if deno_dir else [])]
+            self.node_command = None
+            runner_path = _canonicalize_path(self._get_runner_path())
+            pyodide_dir = _canonicalize_path(_pyodide_dir())
+            protected = [runner_path, pyodide_dir]
             if any(_paths_overlap(_canonicalize_path(path), item) for path in self.enable_write_paths for item in protected):
                 raise CodeInterpreterError("Write paths cannot overlap PythonInterpreter runtime files.")
-            raw_read_paths = [
-                self._get_runner_path(),
-                *([deno_dir] if deno_dir else []),
-                *self.enable_read_paths,
-                *self.enable_write_paths,
-            ]
-            allowed_read_paths = [_canonicalize_path(p) for p in raw_read_paths]
-            args.append(f"--allow-read={','.join(allowed_read_paths)}")
 
-            self._env_arg = ""
-            if self.enable_env_vars:
-                user_vars = [str(v).strip() for v in self.enable_env_vars]
-                args.append("--allow-env=" + ",".join(user_vars))
-                self._env_arg = ",".join(user_vars)
-            if self.enable_network_access:
-                args.append(f"--allow-net={','.join(str(x) for x in self.enable_network_access)}")
-            if self.enable_write_paths:
-                args.append(f"--allow-write={','.join(_canonicalize_path(x) for x in self.enable_write_paths)}")
-
-            args.append(_canonicalize_path(self._get_runner_path()))
-
-            # For runner.js to load in env vars and revoke cache access after startup
-            args.append(self._env_arg)
-            if deno_dir:
-                args.append(f"--dspy-deno-dir={_canonicalize_path(deno_dir)}")
-            self.deno_command = args
-
-        self.deno_process = None
+        self.node_process = None
+        self._node_version = None
         self._mounted_files = False
         self._last_diagnostic: str | None = None
         self._owner_thread: int | None = None
@@ -358,12 +391,12 @@ class PythonInterpreter:
     def _raise_terminal_error(self, message: str, cause: Exception | None = None) -> NoReturn:
         """End an unusable interpreter session and report its process/protocol failure."""
         self._session_ended = True
-        if self.deno_process is not None and self.deno_process.poll() is None:
+        if self.node_process is not None and self.node_process.poll() is None:
             try:
-                self.deno_process.terminate()
+                self.node_process.terminate()
             except ProcessLookupError:
                 pass
-            self.deno_process.wait()
+            self.node_process.wait()
 
         error = CodeInterpreterError(message)
         if cause is not None:
@@ -372,11 +405,11 @@ class PythonInterpreter:
 
     def _write_message(self, message: str, context: str) -> None:
         try:
-            self.deno_process.stdin.write(message + "\n")
-            self.deno_process.stdin.flush()
+            self.node_process.stdin.write(message + "\n")
+            self.node_process.stdin.flush()
         except BrokenPipeError as e:
             self._raise_terminal_error(
-                f"Deno process stopped {context}; interpreter state was lost. "
+                f"Node process stopped {context}; interpreter state was lost. "
                 "Create a new interpreter for a fresh session.",
                 e,
             )
@@ -392,36 +425,9 @@ class PythonInterpreter:
                 "Create a separate interpreter instance for each thread."
             )
 
-    @staticmethod
-    def _get_deno_dir(deno_executable: str = "deno") -> str | None:
-        if "DENO_DIR" in os.environ:
-            return os.environ["DENO_DIR"]
-
-        return PythonInterpreter._query_deno_dir(deno_executable)
-
-    @staticmethod
-    @functools.cache
-    def _query_deno_dir(deno_executable: str) -> str | None:
-        try:
-            result = subprocess.run(
-                [deno_executable, "info", "--json"],
-                capture_output=True,
-                text=True,
-                check=False,
-                env=_deno_subprocess_env(),
-                timeout=DENO_PROBE_TIMEOUT_SECONDS,
-            )
-            if result.returncode == 0:
-                info = json.loads(result.stdout)
-                return info.get("denoDir")
-        except Exception:
-            logger.warning("Unable to find the Deno cache dir.")
-
-        return None
-
     def _get_runner_path(self) -> str:
         current_dir = os.path.dirname(os.path.abspath(__file__))
-        return os.path.join(current_dir, "runner.js")
+        return os.path.join(current_dir, "runner.mjs")
 
     def _mount_files(self):
         if self._mounted_files:
@@ -442,8 +448,8 @@ class PythonInterpreter:
                 else:
                     raise FileNotFoundError(f"Cannot mount non-existent file: {path}")
             # Virtual path keeps the user's basename so sandbox code refers to the
-            # file by the name passed in; host_path is realpath'd so Deno's
-            # permission check matches the canonical entries in --allow-read.
+            # file by the name passed in; host_path is realpath'd so Node's
+            # permission check matches the canonical entries in --allow-fs-read.
             virtual_path = f"/sandbox/{os.path.basename(str(path))}"
             host_path = _canonicalize_path(path)
             self._send_request("mount_file", {"host_path": host_path, "virtual_path": virtual_path}, f"mounting {path}")
@@ -537,43 +543,70 @@ class PythonInterpreter:
         result = self.tools[tool_name](**kwargs)
         return _await_in_sync(result) if asyncio.iscoroutine(result) else result
 
-    def _ensure_deno_process(self) -> None:
+    def _ensure_node_process(self) -> None:
         self._check_session_active()
 
-        if self.deno_process is not None:
-            exit_code = self.deno_process.poll()
+        if self.node_process is not None:
+            exit_code = self.node_process.poll()
             if exit_code is None:
                 return
             self._raise_terminal_error(
-                f"Deno process exited (code {exit_code}); interpreter state was lost. "
+                f"Node process exited (code {exit_code}); interpreter state was lost. "
                 "Create a new interpreter for a fresh session."
             )
 
         self.start()
 
+    def _build_node_command(self) -> list[str]:
+        node_executable = _find_node_executable()
+        version = _validate_node_version(node_executable)
+        pyodide_dir = _ensure_pyodide()
+        runner_path = _canonicalize_path(self._get_runner_path())
+
+        read_paths = [runner_path, pyodide_dir, *self.enable_read_paths, *self.enable_write_paths]
+        args = [
+            node_executable,
+            "--permission",
+            "--disallow-code-generation-from-strings",
+            "--disable-warning=ExperimentalWarning",
+            *(f"--allow-fs-read={_canonicalize_path(path)}" for path in read_paths),
+            *(f"--allow-fs-write={_canonicalize_path(path)}" for path in self.enable_write_paths),
+        ]
+        if version < NODE_DEFAULT_JSPI_VERSION:
+            args.append("--experimental-wasm-jspi")
+        if self.enable_network_access:
+            if version >= NODE_NET_PERMISSION_VERSION:
+                args.append("--allow-net")
+            logger.warning(
+                "Node.js grants network access to all hosts; enable_network_access=%s is not enforced per host.",
+                self.enable_network_access,
+            )
+
+        env_arg = ",".join(str(v).strip() for v in self.enable_env_vars)
+        args += [runner_path, env_arg, pyodide_dir]
+        if self.enable_network_access:
+            args.append("--dspy-allow-net")
+        return args
+
     def _spawn_process(self) -> None:
-        if self._uses_default_deno_command:
-            _validate_deno_version(self.deno_command[0])
+        if self._uses_default_node_command:
+            self.node_command = self._build_node_command()
 
         try:
-            self.deno_process = subprocess.Popen(
-                self.deno_command,
+            self.node_process = subprocess.Popen(
+                self.node_command,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 encoding="UTF-8",
-                env=_deno_subprocess_env() if self._uses_default_deno_command else os.environ.copy(),
+                env=_node_subprocess_env(self.enable_env_vars) if self._uses_default_node_command else os.environ.copy(),
             )
         except FileNotFoundError as e:
             install_instructions = (
-                "Deno executable not found. Install DSPy's managed Deno runtime with:\n"
-                '> pip install "dspy[deno]"\n'
-                "Alternatively, install Deno system-wide:\n"
-                "> curl -fsSL https://deno.land/install.sh | sh\n"
-                "*or*, on macOS with Homebrew:\n"
-                "> brew install deno\n"
-                "For additional configurations: https://docs.deno.com/runtime/getting_started/installation/"
+                "Node.js executable not found. Install DSPy's managed Node.js runtime with:\n"
+                '> pip install "dspy[node]"\n'
+                "Alternatively, install Node.js 24 or newer system-wide: https://nodejs.org/en/download"
             )
             raise CodeInterpreterError(install_instructions) from e
         self._health_check()
@@ -581,16 +614,16 @@ class PythonInterpreter:
     _MAX_SKIP_LINES = 100
 
     def _read_response_line(self, context: str) -> str:
-        """Read one stdout line from Deno or raise a process-level error."""
-        response_line = self.deno_process.stdout.readline().strip()
+        """Read one stdout line from Node or raise a process-level error."""
+        response_line = self.node_process.stdout.readline().strip()
         if response_line:
             return response_line
 
         diagnostic = f" (last sandbox diagnostic: {self._last_diagnostic})" if self._last_diagnostic else ""
-        exit_code = self.deno_process.poll()
+        exit_code = self.node_process.poll()
         if exit_code is not None:
-            stderr = self.deno_process.stderr.read() if self.deno_process.stderr else ""
-            self._raise_terminal_error(f"Deno exited (code {exit_code}) {context}: {stderr}{diagnostic}")
+            stderr = self.node_process.stderr.read() if self.node_process.stderr else ""
+            self._raise_terminal_error(f"Node exited (code {exit_code}) {context}: {stderr}{diagnostic}")
         self._raise_terminal_error(f"No response {context}{diagnostic}")
 
     def _parse_response_line(self, response_line: str, context: str) -> dict | None:
@@ -776,7 +809,7 @@ class PythonInterpreter:
         self._check_thread_ownership()
         variables = variables or {}
         code = self._inject_variables(code, variables)
-        self._ensure_deno_process()
+        self._ensure_node_process()
         self._mount_files()
         self._register_tools()
 
@@ -852,20 +885,20 @@ class PythonInterpreter:
 
     @with_callbacks
     def start(self) -> None:
-        """Initialize the Deno/Pyodide sandbox.
+        """Initialize the Node/Pyodide sandbox.
 
-        This pre-warms the sandbox by starting the Deno subprocess.
+        This pre-warms the sandbox by starting the Node subprocess.
         Can be called explicitly for pooling, or will be called lazily
         on first execute().
 
         Idempotent while the session is active. A stopped or shut-down session
         cannot be restarted because its Python state cannot be reconstructed.
         """
-        if self.deno_process is None:
+        if self.node_process is None:
             self._check_session_active()
             self._spawn_process()
         else:
-            self._ensure_deno_process()
+            self._ensure_node_process()
 
     def __enter__(self):
         return self
@@ -884,13 +917,13 @@ class PythonInterpreter:
     def shutdown(self) -> None:
         session_was_active = not self._session_ended
         self._session_ended = True
-        if self.deno_process and self.deno_process.poll() is None:
+        if self.node_process and self.node_process.poll() is None:
             if session_was_active:
-                self.deno_process.stdin.write(_jsonrpc_notification("shutdown") + "\n")
-                self.deno_process.stdin.flush()
-                self.deno_process.stdin.close()
+                self.node_process.stdin.write(_jsonrpc_notification("shutdown") + "\n")
+                self.node_process.stdin.flush()
+                self.node_process.stdin.close()
             else:
-                self.deno_process.terminate()
-            self.deno_process.wait()
-        self.deno_process = None
+                self.node_process.terminate()
+            self.node_process.wait()
+        self.node_process = None
         self._owner_thread = None

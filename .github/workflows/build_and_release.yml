@@ -38,10 +38,6 @@ jobs:
           python-version: "3.11"
       - name: Install dependencies
         run: python3 -m pip install --upgrade setuptools wheel twine build semver packaging
-      - name: Install Deno
-        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
-        with:
-          deno-version: v2.7.7
       - name: Get correct version for TestPyPI release
         id: check_version
         env:
@@ -69,7 +65,7 @@ jobs:
         run: |
           source test_before_testpypi/bin/activate
           # Install the locally built wheel and testing dependencies
-          pip install dist/*.whl pytest pytest-asyncio pytest-mock
+          pip install "$(ls dist/*.whl)[node]" pytest pytest-asyncio pytest-mock
           pytest tests/metadata/test_metadata.py tests/predict
           (cd "$RUNNER_TEMP" && python -c 'import dspy; assert dspy.PythonInterpreter().execute("6 * 7") == 42')
           deactivate
@@ -101,10 +97,6 @@ jobs:
           python-version: "3.11"
       - name: Install dependencies
         run: python3 -m pip install --upgrade setuptools wheel twine build
-      - name: Install Deno
-        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
-        with:
-          deno-version: v2.7.7
       - name: Update version in pyproject.toml
         env:
           VERSION: ${{ needs.extract-tag.outputs.version }}
@@ -129,7 +121,7 @@ jobs:
         run: |
           source test_before_pypi/bin/activate
           # Install the locally built wheel and testing dependencies
-          pip install dist/*.whl pytest pytest-asyncio pytest-mock
+          pip install "$(ls dist/*.whl)[node]" pytest pytest-asyncio pytest-mock
           pytest tests/metadata/test_metadata.py tests/predict
           (cd "$RUNNER_TEMP" && python -c 'import dspy; assert dspy.PythonInterpreter().execute("6 * 7") == 42')
           deactivate

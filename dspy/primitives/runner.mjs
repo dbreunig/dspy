@@ -1,7 +1,10 @@
 // Adapted from "Simon Willison's TILs" (https://til.simonwillison.net/deno/pyodide-sandbox)
+//
+// Usage: node --permission ... runner.mjs <env-var-names> <pyodide-dir> [--dspy-allow-net]
 
-import pyodideModule from "npm:pyodide@0.29.4/pyodide.js";
-import { readLines } from "https://deno.land/std@0.186.0/io/mod.ts";
+import fs from "node:fs";
+import { createInterface } from "node:readline";
+import { pathToFileURL } from "node:url";
 
 const JSON = Object.freeze(globalThis.JSON), console = Object.freeze(globalThis.console);
 // =============================================================================
@@ -132,22 +135,42 @@ const jsonrpcError = (code, message, id, data = null) => {
   return JSON.stringify({ jsonrpc: "2.0", error: err, id });
 };
 
-// Global handler to prevent uncaught promise rejections from crashing Deno
+// Global handler to prevent uncaught promise rejections from crashing Node
 // These can occur during async Python <-> JS interop
-globalThis.addEventListener("unhandledrejection", (event) => {
-  event.preventDefault();
+process.on("unhandledRejection", (reason) => {
   console.log(jsonrpcNotification("unhandled_error", {
-    message: `Unhandled async error: ${event.reason?.message || event.reason}`,
+    message: `Unhandled async error: ${reason?.message || reason}`,
   }));
 });
 
-const pyodide = await pyodideModule.loadPyodide();
-const denoDir = Deno.args.find((arg) => arg.startsWith("--dspy-deno-dir="))?.slice(16);
-if (denoDir) await Deno.permissions.revoke({ name: "read", path: denoDir });
+// Node prints the offending source line on a fatal error, which for Pyodide is
+// a minified line longer than the pipe buffer. Report the error itself instead.
+process.on("uncaughtException", (error) => {
+  process.stderr.write(`${error?.name ?? "Error"}: ${error?.message ?? error}\n`, () => process.exit(1));
+});
+
+const [envVarArg = "", pyodideDir, ...flags] = process.argv.slice(2);
+const allowNet = flags.includes("--dspy-allow-net");
+
+// Emscripten's NODEFS reads fs open flags through process.binding("constants"),
+// which the permission model denies. Serve only that lookup from the public API.
+const nativeBinding = process.binding;
+process.binding = (name) => name === "constants" ? { fs: fs.constants } : nativeBinding.call(process, name);
+
+// Python's `js` module sees only these globals. Node's permission model is not a
+// sandbox for hostile code, so sandboxed code gets no handle on `process`,
+// `require`, or the Node built-ins. Network globals are exposed only on request.
+const sandboxGlobals = { __proto__: null, setTimeout, clearTimeout, setInterval, clearInterval, queueMicrotask };
+if (allowNet) {
+  Object.assign(sandboxGlobals, { fetch, Headers, Request, Response, AbortController, AbortSignal, URL });
+}
+
+const { loadPyodide } = await import(pathToFileURL(`${pyodideDir}/pyodide.mjs`).href);
+const pyodide = await loadPyodide({ indexURL: pyodideDir, jsglobals: sandboxGlobals });
 
 // Tool call support: allows Python code to call host-side functions
 // The stdin reader is shared so tool_call can read responses during execution
-const stdinReader = readLines(Deno.stdin);
+const stdinReader = createInterface({ input: process.stdin, crlfDelay: Infinity })[Symbol.asyncIterator]();
 let requestIdCounter = 0;
 
 const TOOL_BRIDGE_ERROR_KEY = "__dspy_tool_bridge_error__";
@@ -198,7 +221,7 @@ async function toolCallBridge(name, argsJson) {
     return result.value;
   } catch (error) {
     // Return a structured error payload so Python can raise with full context
-    // without triggering a top-level unhandled rejection in Deno.
+    // without triggering a top-level unhandled rejection in Node.
     return {
       [TOOL_BRIDGE_ERROR_KEY]: true,
       message: `Tool bridge error for '${name}': ${error.message}`
@@ -210,9 +233,9 @@ async function toolCallBridge(name, argsJson) {
 pyodide.globals.set("_js_tool_call", toolCallBridge);
 
 try {
-  const env_vars = (Deno.args[0] ?? "").split(",").filter(Boolean);
+  const env_vars = envVarArg.split(",").filter(Boolean);
   for (const key of env_vars) {
-    const val = Deno.env.get(key);
+    const val = process.env[key];
     if (val !== undefined) {
       pyodide.runPython(`
 import os
@@ -253,7 +276,7 @@ while (true) {
     try {
       const virtualPath = params.virtual_path;
       const hostPath = params.host_path || virtualPath;
-      await Deno.writeFile(hostPath, pyodide.FS.readFile(virtualPath));
+      await fs.promises.writeFile(hostPath, pyodide.FS.readFile(virtualPath));
     } catch (e) { /* ignore sync errors */ }
     continue;
   }
@@ -265,7 +288,7 @@ while (true) {
     const hostPath = params.host_path;
     const virtualPath = params.virtual_path || hostPath;
     try {
-      const contents = await Deno.readFile(hostPath);
+      const contents = await fs.promises.readFile(hostPath);
       const dirs = virtualPath.split('/').slice(1, -1);
       let cur = '';
       for (const d of dirs) {
@@ -392,3 +415,5 @@ while (true) {
   // Unknown method
   console.log(jsonrpcError(JSONRPC_PROTOCOL_ERRORS.MethodNotFound, `Method not found: ${method}`, requestId));
 }
+
+process.exit(0);

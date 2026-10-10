@@ -28,7 +28,7 @@ class ProgramOfThought(Module):
         ProgramOfThought is deprecated. RLM is the preferred replacement.
 
     A DSPy module that runs Python programs to solve a problem.
-    This module requires Deno. Install DSPy's managed runtime with ``pip install "dspy[deno]"``.
+    This module requires Node.js. Install DSPy's managed runtime with ``pip install "dspy[node]"``.
 
     Examples:
     ```

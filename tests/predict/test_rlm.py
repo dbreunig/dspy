@@ -1058,12 +1058,12 @@ class TestPythonInterpreter:
         """Test that start() pre-warms the sandbox."""
         interp = PythonInterpreter()
         try:
-            # Before start, deno_process should be None
-            assert interp.deno_process is None
+            # Before start, node_process should be None
+            assert interp.node_process is None
             # After start, it should be running
             interp.start()
-            assert interp.deno_process is not None
-            assert interp.deno_process.poll() is None  # Still running
+            assert interp.node_process is not None
+            assert interp.node_process.poll() is None  # Still running
             # Execute should work
             result = interp.execute("print(42)")
             assert "42" in result
@@ -1075,9 +1075,9 @@ class TestPythonInterpreter:
         interp = PythonInterpreter()
         try:
             interp.start()
-            first_process = interp.deno_process
+            first_process = interp.node_process
             interp.start()  # Second call - should be idempotent
-            assert interp.deno_process is first_process  # Same process
+            assert interp.node_process is first_process  # Same process
         finally:
             interp.shutdown()
 
@@ -1222,7 +1222,8 @@ from pyodide.http import pyfetch
 import asyncio
 asyncio.get_event_loop().run_until_complete(pyfetch("https://example.com"))
 """)
-        assert "net access" in str(exc_info.value).lower() or "allow-net" in str(exc_info.value).lower()
+        # The sandbox receives no fetch globals unless enable_network_access is set.
+        assert "is not defined" in str(exc_info.value)
 
     def test_imports_work(self, pooled_interpreter):
         """Test that standard library imports work."""
